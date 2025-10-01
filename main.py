@@ -9,7 +9,10 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QSize
 
 from db import Database
-from add_form import AddDialog, AlterTableDialog
+from add_form import AddDialog
+from alter_form import AlterTableDialog
+from refresh_manager import TableManager
+
 
 
 class AppMainWindow(QMainWindow):
@@ -27,6 +30,9 @@ class AppMainWindow(QMainWindow):
         self.active_insert_widget = None
         self.active_migrate_widget = None
         self.setWindowTitle("DB Form Designer — Integrated")
+
+        self.table_manager = TableManager(self.db, parent=self)
+
         self._init_ui()
         self.apply_styles()
 
@@ -132,11 +138,7 @@ class AppMainWindow(QMainWindow):
         layout.addWidget(QLabel("Изменение структуры — выбор таблицы"))
 
         self.migrate_table_combo = QComboBox()
-        try:
-            tables = self.db.list_tables()
-        except Exception:
-            tables = []
-        self.migrate_table_combo.addItems(tables)
+        self.migrate_table_combo.setModel(self.table_manager.model)
         self.migrate_table_combo.currentTextChanged.connect(self.on_migrate_table_selected)
         layout.addWidget(self.migrate_table_combo)
 
@@ -159,12 +161,11 @@ class AppMainWindow(QMainWindow):
                 pass
             self.active_migrate_widget = None
 
-        # try:
-        dialog = AlterTableDialog(table_name=table_name, db=self.db, parent=self.migrate_container_page)
+        dialog = AlterTableDialog(table_name=table_name, db=self.db, table_manager=self.table_manager, parent=self.migrate_container_page)
         dialog.setWindowFlags(Qt.Widget)
         dialog.setParent(self.migrate_container_page)
 
-        dialog.tablesChanged.connect(self._refresh_migrate_tables)
+        dialog.tablesChanged.connect(self.table_manager.handle_external_change)
 
         for i in reversed(range(self.migrate_container_layout.count())):
             item = self.migrate_container_layout.itemAt(i)
@@ -180,33 +181,6 @@ class AppMainWindow(QMainWindow):
         self.left_stack.setCurrentIndex(1)
         self.right_stack.setCurrentIndex(2)
         self.right_heading.setText(f"Изменение структуры — {table_name}")
-
-        # except Exception as e:
-        #     QMessageBox.critical(self, "Ошибка", f"Не удалось подготовить форму: {e}")
-
-    def _refresh_migrate_tables(self):
-        try:
-            tables = self.db.list_tables()
-        except Exception:
-            tables = []
-
-        current = self.migrate_table_combo.currentText()
-        self.migrate_table_combo.blockSignals(True)
-        self.migrate_table_combo.clear()
-        self.migrate_table_combo.addItems(tables)
-        if current and current in tables:
-            idx = self.migrate_table_combo.findText(current)
-            if idx >= 0:
-                self.migrate_table_combo.setCurrentIndex(idx)
-        elif self.active_migrate_widget and self.active_migrate_widget.new_table_name:
-            new_name = getattr(self.active_migrate_widget, "new_table_name", None)
-            if new_name:
-                idx = self.migrate_table_combo.findText(new_name)
-                if idx >= 0:
-                    self.migrate_table_combo.setCurrentIndex(idx)
-        else:
-            pass
-        self.migrate_table_combo.blockSignals(False)
 
     def _empty_panel(self, title: str):
         w = QWidget()
@@ -240,11 +214,7 @@ class AppMainWindow(QMainWindow):
         layout.addWidget(QLabel("Добавить данные — выбор таблицы"))
 
         self.table_combo = QComboBox()
-        try:
-            tables = self.db.list_tables()
-        except Exception:
-            tables = []
-        self.table_combo.addItems(tables)
+        self.table_combo.setModel(self.table_manager.model)
         self.table_combo.currentTextChanged.connect(self.on_table_selected)
         layout.addWidget(self.table_combo)
 
@@ -266,10 +236,11 @@ class AppMainWindow(QMainWindow):
                 pass
             self.active_insert_widget = None
 
-        # try:
-        dialog = AddDialog(table_name=table_name, db=self.db, parent=self.add_container_page)
+        dialog = AddDialog(table_name=table_name, db=self.db, table_manager=self.table_manager, parent=self.add_container_page)
         dialog.setWindowFlags(Qt.Widget)
         dialog.setParent(self.add_container_page)
+
+        dialog.tablesChanged.connect(self.table_manager.handle_external_change)
 
         for i in reversed(range(self.add_container_layout.count())):
             item = self.add_container_layout.itemAt(i)
@@ -285,9 +256,6 @@ class AppMainWindow(QMainWindow):
         self.left_stack.setCurrentIndex(2)
         self.right_stack.setCurrentIndex(3)
         self.right_heading.setText(f"Добавление — {table_name}")
-
-        # except Exception as e:
-        #     QMessageBox.critical(self, "Ошибка", f"Не удалось подготовить форму: {e}")
 
     def _make_top_button_handler(self, key: str):
         def handler():
