@@ -147,6 +147,7 @@ class AppMainWindow(QMainWindow):
         return w
 
     def on_migrate_table_selected(self, table_name: str):
+        print('qqqq', table_name)
         if not table_name:
             return
 
@@ -162,6 +163,8 @@ class AppMainWindow(QMainWindow):
         dialog = AlterTableDialog(table_name=table_name, db=self.db, parent=self.migrate_container_page)
         dialog.setWindowFlags(Qt.Widget)
         dialog.setParent(self.migrate_container_page)
+
+        dialog.tablesChanged.connect(self._refresh_migrate_tables)
 
         for i in reversed(range(self.migrate_container_layout.count())):
             item = self.migrate_container_layout.itemAt(i)
@@ -180,6 +183,30 @@ class AppMainWindow(QMainWindow):
 
         # except Exception as e:
         #     QMessageBox.critical(self, "Ошибка", f"Не удалось подготовить форму: {e}")
+
+    def _refresh_migrate_tables(self):
+        try:
+            tables = self.db.list_tables()
+        except Exception:
+            tables = []
+
+        current = self.migrate_table_combo.currentText()
+        self.migrate_table_combo.blockSignals(True)
+        self.migrate_table_combo.clear()
+        self.migrate_table_combo.addItems(tables)
+        if current and current in tables:
+            idx = self.migrate_table_combo.findText(current)
+            if idx >= 0:
+                self.migrate_table_combo.setCurrentIndex(idx)
+        elif self.active_migrate_widget and self.active_migrate_widget.new_table_name:
+            new_name = getattr(self.active_migrate_widget, "new_table_name", None)
+            if new_name:
+                idx = self.migrate_table_combo.findText(new_name)
+                if idx >= 0:
+                    self.migrate_table_combo.setCurrentIndex(idx)
+        else:
+            pass
+        self.migrate_table_combo.blockSignals(False)
 
     def _empty_panel(self, title: str):
         w = QWidget()

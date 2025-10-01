@@ -1,7 +1,7 @@
-
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QDialog, QFormLayout, QLineEdit, QPushButton, QVBoxLayout, QMessageBox, QLabel, QWidget, QHBoxLayout, QComboBox,
-    QCheckBox
+    QCheckBox, QSizePolicy
 )
 from PySide6.QtGui import QIntValidator
 from typing import Dict, Any
@@ -26,10 +26,13 @@ class FieldLine:
 
 
 class AlterTableDialog(QDialog):
+    tablesChanged = Signal()
+
     def __init__(self, table_name: str, db, parent=None):
         super().__init__(parent)
         self.db = db
         self.table = db.get_table(table_name)
+        print(self.table)
         self.setWindowTitle(f"Alter table — {table_name}")
 
         self.layout = QVBoxLayout(self)
@@ -80,39 +83,34 @@ class AlterTableDialog(QDialog):
 
         widget.column_id = column_id
 
-        # Основные поля
         name_edit = QLineEdit(col.name if col is not None else "")
         type_combo = QComboBox()
         type_combo.addItems(["INTEGER", "TEXT", "REAL", "BLOB", "DATE"])
 
-        # Checkbox constraints
         not_null_check = QCheckBox("NOT NULL")
         unique_check = QCheckBox("UNIQUE")
-        pk_check = QCheckBox("PRIMARY KEY")
+        pk_check = QCheckBox("PK")
 
-        # Новые поля: default, check, fk
         default_edit = QLineEdit()
         default_edit.setPlaceholderText("DEFAULT value")
 
         check_edit = QLineEdit()
         check_edit.setPlaceholderText("CHECK condition")
 
-        fk_combo = QComboBox()
-        fk_combo.addItem("")  # пустой элемент для отсутствия FK
-        # Заполняем список доступных таблиц для foreign key
-        available_tables = self.db.list_tables()
-        fk_combo.addItems(available_tables)
+        fk_edit = QLineEdit()
+        fk_edit.setPlaceholderText("FK table")
 
-        fk_column_combo = QComboBox()
-        fk_column_combo.setPlaceholderText("FK column")
+        fk_column_edit = QLineEdit()
+        fk_column_edit.setPlaceholderText("FK column")
 
-        # Обновляем список колонок при выборе таблицы для FK
-        fk_combo.currentTextChanged.connect(lambda table: self.update_fk_columns(table, fk_column_combo))
-
-        btn_remove = QPushButton("Remove")
+        btn_remove = QPushButton("X", styleSheet="color: red;")
         btn_remove.clicked.connect(lambda: self.remove_column_widget(widget))
+        text_edits = [name_edit, default_edit, check_edit, fk_edit, fk_column_edit]
 
-        # Заполняем данные если передан существующий столбец
+        for edit in text_edits:
+            edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            edit.setMinimumWidth(95)
+
         if col is not None:
             type_combo.setCurrentText(str(col.type))
             not_null_check.setChecked(not col.nullable)
@@ -120,60 +118,47 @@ class AlterTableDialog(QDialog):
                 bool(col.name in [i['column_names'][0] for i in self.db.insp.get_unique_constraints(self.table.name)]))
             pk_check.setChecked(bool(col.primary_key))
 
-            # Заполняем новые поля если есть данные
             try:
                 type_text = str(col.type)
                 type_combo.setCurrentText(type_text)
 
-                # Для default значения
-                if hasattr(col, 'default') and col.default is not None:
-                    default_edit.setText(str(col.default))
+                if col.server_default is not None:
+                    default_edit.setText(str(col.server_default.arg))
 
-                # Для check constraints (нужно будет доработать в зависимости от структуры БД)
-                if hasattr(col, 'check') and col.check:
-                    check_edit.setText(str(col.check))
+                check_constraints = [f"({check.sqltext})" for check in col.table.constraints
+                                     if hasattr(check, 'sqltext') and col.name in str(check.sqltext)]
+                if check_constraints:
+                    check_edit.setText(check_constraints[0])
 
-                # Для foreign keys (нужно будет доработать в зависимости от структуры БД)
                 if hasattr(col, 'foreign_keys') and col.foreign_keys:
                     for fk in col.foreign_keys:
-                        fk_combo.setCurrentText(fk.column.table.name)
-                        fk_column_combo.setCurrentText(fk.column.name)
+                        fk_edit.setText(fk.column.table.name)
+                        fk_column_edit.setText(fk.column.name)
 
             except:
                 pass
 
-        # Добавляем виджеты в layout
         layout.addWidget(QLabel("Name:"))
-        layout.addWidget(name_edit)
+        layout.addWidget(name_edit, 1)
         layout.addWidget(QLabel("Type:"))
-        layout.addWidget(type_combo)
-        layout.addWidget(not_null_check)
+        layout.addWidget(type_combo, 1)
+        layout.addWidget(not_null_check, 1)
         layout.addWidget(unique_check)
-        layout.addWidget(pk_check)
+        layout.addWidget(pk_check, 1)
         layout.addWidget(QLabel("Default:"))
-        layout.addWidget(default_edit)
+        layout.addWidget(default_edit, 1)
         layout.addWidget(QLabel("Check:"))
-        layout.addWidget(check_edit)
+        layout.addWidget(check_edit, 1)
         layout.addWidget(QLabel("FK Table:"))
-        layout.addWidget(fk_combo)
+        layout.addWidget(fk_edit, 1)
         layout.addWidget(QLabel("FK Column:"))
-        layout.addWidget(fk_column_combo)
+        layout.addWidget(fk_column_edit, 1)
         layout.addWidget(btn_remove)
 
         self.columns_layout.addWidget(widget)
         self.column_widgets[column_id] = widget
 
         return column_id, widget
-
-    def update_fk_columns(self, table_name, fk_column_combo):
-        fk_column_combo.clear()
-        if table_name and table_name in self.db.list_tables():
-            try:
-                table = self.db.get_table(table_name)
-                columns = [col.name for col in table.columns]
-                fk_column_combo.addItems(columns)
-            except:
-                pass
 
     def get_column_data(self, widget):
         children = widget.findChildren(QLineEdit) + widget.findChildren(QComboBox) + widget.findChildren(QCheckBox)
@@ -185,8 +170,8 @@ class AlterTableDialog(QDialog):
         pk_check = None
         default_edit = None
         check_edit = None
-        fk_combo = None
-        fk_column_combo = None
+        fk_edit = None
+        fk_column_edit = None
 
         for child in children:
             if isinstance(child, QLineEdit):
@@ -194,22 +179,21 @@ class AlterTableDialog(QDialog):
                     default_edit = child
                 elif child.placeholderText() == "CHECK condition":
                     check_edit = child
+                elif child.placeholderText() == "FK table":
+                    fk_edit = child
+                elif child.placeholderText() == "FK column":
+                    fk_column_edit = child
                 else:
                     name_edit = child
             elif isinstance(child, QComboBox):
-                if child.placeholderText() == "FK column":
-                    fk_column_combo = child
-                elif child.count() > 0 and child.itemText(0) == "":  # Это FK combo
-                    fk_combo = child
-                else:
-                    type_combo = child
+                type_combo = child
             elif isinstance(child, QCheckBox):
                 text = child.text()
                 if text == "NOT NULL":
                     not_null_check = child
                 elif text == "UNIQUE":
                     unique_check = child
-                elif text == "PRIMARY KEY":
+                elif text == "PK":
                     pk_check = child
 
         if name_edit and type_combo:
@@ -221,8 +205,8 @@ class AlterTableDialog(QDialog):
                 'primary_key': pk_check.isChecked() if pk_check else False,
                 'default': default_edit.text() if default_edit else None,
                 'check': check_edit.text() if check_edit else None,
-                'fk_table': fk_combo.currentText() if fk_combo else None,
-                'fk_column': fk_column_combo.currentText() if fk_column_combo else None
+                'fk_table': fk_edit.text() if fk_edit else None,
+                'fk_column': fk_column_edit.text() if fk_column_edit else None
             }
         return {}
 
@@ -244,8 +228,13 @@ class AlterTableDialog(QDialog):
         new_data = self.gather_changes()
         try:
             self.db.alter_table(self.old_table_name, self.new_table_name, self.old_data, new_data)
-            QMessageBox.information(self, "Успешно", "структура изменена")
-            self.accept()
+            QMessageBox.information(self, "Успешно", "Структура изменена")
+            self.tablesChanged.emit()
+            try:
+                self.accept()
+            except Exception:
+                self.setParent(None)
+                self.deleteLater()
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", str(e))
 
