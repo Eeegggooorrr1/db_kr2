@@ -23,13 +23,13 @@ class AppMainWindow(QMainWindow):
         ("view", "Посмотреть данные"),
     ]
 
-    def __init__(self, db: Database, button_callbacks: Optional[Dict[str, Callable]] = None):
+    def __init__(self, db: Database, button_callbacks = None):
         super().__init__()
         self.db = db
         self.button_callbacks = button_callbacks or {}
         self.active_insert_widget = None
         self.active_migrate_widget = None
-        self.setWindowTitle("DB Form Designer — Integrated")
+        self.setWindowTitle("ыыыыыыыыыыыыыыыыыыы")
 
         self.table_manager = TableManager(self.db, parent=self)
 
@@ -53,7 +53,7 @@ class AppMainWindow(QMainWindow):
         top_layout.addWidget(title)
         top_layout.addStretch(1)
 
-        self.top_buttons: Dict[str, QPushButton] = {}
+        self.top_buttons = {}
         for key, label in self.BUTTONS:
             btn = QPushButton(label)
             btn.setObjectName(f"topBtn_{key}")
@@ -78,7 +78,6 @@ class AppMainWindow(QMainWindow):
         left_layout = QVBoxLayout(left_frame)
         left_layout.setContentsMargins(10, 10, 10, 10)
         left_layout.setSpacing(8)
-        left_layout.addWidget(QLabel("Контекст"))
 
         self.left_stack = QStackedWidget()
         self.left_stack.addWidget(self._empty_panel("Подключение"))
@@ -135,18 +134,29 @@ class AppMainWindow(QMainWindow):
         layout = QVBoxLayout(w)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
-        layout.addWidget(QLabel("Изменение структуры — выбор таблицы"))
 
-        self.migrate_table_combo = QComboBox()
-        self.migrate_table_combo.setModel(self.table_manager.model)
-        self.migrate_table_combo.currentTextChanged.connect(self.on_migrate_table_selected)
-        layout.addWidget(self.migrate_table_combo)
+        self.migrate_buttons_layout = QVBoxLayout()
+        for i in self.table_manager.tables():
+            btn = QPushButton(i)
+            btn.clicked.connect(lambda _, t=i: self.on_migrate_table_selected(t))
+            self.migrate_buttons_layout.addWidget(btn)
 
-        open_btn = QPushButton("Открыть форму изменения")
-        open_btn.clicked.connect(lambda: self._make_top_button_handler("migrate")())
-        layout.addWidget(open_btn)
+        layout.addLayout(self.migrate_buttons_layout)
+
+        self.table_manager.tablesChanged.connect(self._rebuild_migrate_buttons)
+
         layout.addStretch(1)
         return w
+
+    def _rebuild_migrate_buttons(self, tables):
+        while self.migrate_buttons_layout.count():
+            item = self.migrate_buttons_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        for i in tables:
+            btn = QPushButton(i)
+            btn.clicked.connect(lambda _, t=i: self.on_migrate_table_selected(t))
+            self.migrate_buttons_layout.addWidget(btn)
 
     def on_migrate_table_selected(self, table_name: str):
         print('qqqq', table_name)
@@ -180,7 +190,6 @@ class AppMainWindow(QMainWindow):
 
         self.left_stack.setCurrentIndex(1)
         self.right_stack.setCurrentIndex(2)
-        self.right_heading.setText(f"Изменение структуры — {table_name}")
 
     def _empty_panel(self, title: str):
         w = QWidget()
@@ -211,20 +220,31 @@ class AppMainWindow(QMainWindow):
         layout = QVBoxLayout(w)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
-        layout.addWidget(QLabel("Добавить данные — выбор таблицы"))
 
-        self.table_combo = QComboBox()
-        self.table_combo.setModel(self.table_manager.model)
-        self.table_combo.currentTextChanged.connect(self.on_table_selected)
-        layout.addWidget(self.table_combo)
+        self.add_buttons_layout = QVBoxLayout()
+        for i in self.table_manager.tables():
+            btn = QPushButton(i)
+            btn.clicked.connect(lambda _, t=i: self.on_add_table_selected(t))
+            self.add_buttons_layout.addWidget(btn)
 
-        open_btn = QPushButton("Открыть форму добавления")
-        open_btn.clicked.connect(lambda: self._make_top_button_handler("add")())
-        layout.addWidget(open_btn)
+        layout.addLayout(self.add_buttons_layout)
+
+        self.table_manager.tablesChanged.connect(self._rebuild_add_buttons)
+
         layout.addStretch(1)
         return w
 
-    def on_table_selected(self, table_name: str):
+    def _rebuild_add_buttons(self, tables):
+        while self.add_buttons_layout.count():
+            item = self.add_buttons_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        for i in tables:
+            btn = QPushButton(i)
+            btn.clicked.connect(lambda _, t=i: self.on_add_table_selected(t))
+            self.add_buttons_layout.addWidget(btn)
+
+    def on_add_table_selected(self, table_name: str):
         if not table_name:
             return
 
@@ -283,12 +303,62 @@ class AppMainWindow(QMainWindow):
 
     def apply_styles(self):
         base = """
-        QWidget { font-family: 'Segoe UI', Roboto, Arial, sans-serif; font-size: 13px; color: #222; }
-        QFrame { background: #fff; }
-        QLineEdit, QComboBox, QTextEdit { border: 1px solid #d8dde3; border-radius: 6px; padding: 6px; background: #fff; }
-        QPushButton { min-height: 28px; border-radius:6px; padding:6px 10px; }
-        QPushButton#topBtn_add { background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #e6f0ff, stop:1 #d6e9ff); font-weight:600; }
-        QLabel#appTitle { font-weight:600; font-size:16px; }
+        QMainWindow, QWidget { font-family: 'Segoe UI', Roboto, Arial, sans-serif; font-size: 13px; color: #222; background: #f5f7fa; }
+
+        QFrame#topBar { background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #ffffff, stop:1 #f3f6fb); border-bottom: 1px solid #e6eef8; }
+
+        QLabel#appTitle { font-weight:600; font-size:16px; color: #1f2d3d; }
+
+        QPushButton {
+            min-height: 28px;
+            border-radius: 8px;
+            padding: 6px 12px;
+            border: 1px solid rgba(34,45,61,0.07);
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffffff, stop:1 #f7fbff);
+            transition: all 100ms ease;
+        }
+        QPushButton:hover {
+            transform: translateY(-1px);
+            border: 1px solid rgba(34,45,61,0.12);
+            background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #ffffff, stop:1 #eef6ff);
+        }
+        QPushButton:pressed {
+            transform: translateY(0);
+            padding-top:7px;
+            padding-bottom:5px;
+            background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #eaf2ff, stop:1 #dfeeff);
+            border: 1px solid rgba(34,45,61,0.14);
+        }
+
+        QPushButton:focus {
+            outline: none;
+            border: 1px solid #7aa7ff;
+            box-shadow: none; /* Qt CSS не поддерживает настоящие box-shadow, используем эффект через GraphicsEffect в коде */
+        }
+
+        QPushButton#topBtn_connect, QPushButton#topBtn_migrate, QPushButton#topBtn_add, QPushButton#topBtn_view {
+            border-radius: 6px;
+            padding: 6px 10px;
+            background: transparent;
+        }
+        QPushButton#topBtn_connect:hover, QPushButton#topBtn_migrate:hover, QPushButton#topBtn_add:hover, QPushButton#topBtn_view:hover {
+            background: rgba(30,58,120,0.04);
+        }
+
+        QWidget#leftPanel { background: transparent; }
+        QWidget#buttonsContainer QPushButton {
+            text-align: left;
+            padding-left: 12px;
+            border: 1px solid rgba(34,45,61,0.04);
+            background: #ffffff;
+        }
+        QWidget#buttonsContainer QPushButton:hover {
+            background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #fbfdff, stop:1 #f3f9ff);
+        }
+
+        QLineEdit, QComboBox, QTextEdit { border: 1px solid #e0e6ec; border-radius: 6px; padding: 6px; background: #fff; }
+
+        QLabel.small { font-size: 11px; color: #7a8794; }
         """
         self.setStyleSheet(base)
 
