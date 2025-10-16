@@ -1,4 +1,3 @@
-# src/app/ui_main.py
 from typing import Optional, Dict, Callable
 import sys
 
@@ -8,11 +7,13 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QSize
 
+from connect_form import ConnectionDialog
 from db import Database
 from add_form import AddDialog
 from alter_form import AlterTableDialog
 from refresh_manager import TableManager
-
+from view_form import SQLStubWindow
+from view_results_form import TableResultWidget
 
 
 class AppMainWindow(QMainWindow):
@@ -29,6 +30,10 @@ class AppMainWindow(QMainWindow):
         self.button_callbacks = button_callbacks or {}
         self.active_insert_widget = None
         self.active_migrate_widget = None
+        self.active_view_widget = None
+        self.view_container_page = None
+        self.view_container_layout = None
+        self.active_view_result_widget = None
         self.setWindowTitle("ыыыыыыыыыыыыыыыыыыы")
 
         self.table_manager = TableManager(self.db, parent=self)
@@ -83,7 +88,7 @@ class AppMainWindow(QMainWindow):
         self.left_stack.addWidget(self._empty_panel("Подключение"))
         self.left_stack.addWidget(self._build_left_migrate_panel())
         self.left_stack.addWidget(self._build_left_add_panel())
-        self.left_stack.addWidget(self._empty_panel("Просмотр"))
+        self.left_stack.addWidget(self._build_left_view_panel())
         left_layout.addWidget(self.left_stack)
         left_layout.addStretch(1)
 
@@ -111,7 +116,11 @@ class AppMainWindow(QMainWindow):
         self.add_container_layout.setSpacing(6)
         self.right_stack.addWidget(self.add_container_page)
 
-        self.right_stack.addWidget(self._placeholder_page("Просмотр"))
+        self.view_container_page = QWidget()
+        self.view_container_layout = QVBoxLayout(self.view_container_page)
+        self.view_container_layout.setContentsMargins(0, 0, 0, 0)
+        self.view_container_layout.setSpacing(6)
+        self.right_stack.addWidget(self.view_container_page)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -159,7 +168,6 @@ class AppMainWindow(QMainWindow):
             self.migrate_buttons_layout.addWidget(btn)
 
     def on_migrate_table_selected(self, table_name: str):
-        print('qqqq', table_name)
         if not table_name:
             return
 
@@ -277,6 +285,79 @@ class AppMainWindow(QMainWindow):
         self.right_stack.setCurrentIndex(3)
         self.right_heading.setText(f"Добавление — {table_name}")
 
+    def _build_left_view_panel(self):
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        self.view_left_container_page = QWidget()
+        self.view_left_container_layout = QVBoxLayout(self.view_left_container_page)
+        self.view_left_container_layout.setContentsMargins(0, 0, 0, 0)
+        self.view_left_container_layout.setSpacing(6)
+
+        layout.addWidget(self.view_left_container_page)
+        layout.addStretch(1)
+        return w
+
+    def _clear_layout(self, layout):
+        while layout and layout.count():
+            item = layout.takeAt(0)
+            if item is None:
+                continue
+            widget = item.widget()
+            if widget:
+                try:
+                    layout.removeWidget(widget)
+                except Exception:
+                    pass
+                widget.setParent(None)
+                try:
+                    widget.deleteLater()
+                except Exception:
+                    pass
+            else:
+                child_layout = item.layout()
+                if child_layout:
+                    self._clear_layout(child_layout)
+
+    def _attach_view_left_widget(self):
+        if self.active_view_widget is not None:
+            return
+
+        try:
+            stub = SQLStubWindow(db = self.db)
+            stub.apply_sql.connect(self._on_view_apply_sql)
+        except Exception as e:
+            print("Не удалось создать SQLStubWindow:", e)
+            return
+
+        try:
+            stub.setWindowFlags(Qt.Widget)
+            stub.setParent(self.view_left_container_page)
+            stub.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            self.view_left_container_layout.addWidget(stub)
+            stub.show()
+            self.active_view_widget = stub
+        except Exception as e:
+            print("Ошибка при встраивании SQLStubWindow:", e)
+            try:
+                stub.setParent(None)
+                stub.deleteLater()
+            except Exception:
+                pass
+
+    def _detach_view_left_widget(self):
+        if self.active_view_widget is not None:
+            try:
+                self.active_view_widget.setParent(None)
+                self.active_view_widget.deleteLater()
+            except Exception:
+                pass
+            self.active_view_widget = None
+
+        if self.view_left_container_layout is not None:
+            self._clear_layout(self.view_left_container_layout)
     def _make_top_button_handler(self, key: str):
         def handler():
             idx_map = {
@@ -285,17 +366,65 @@ class AppMainWindow(QMainWindow):
                 "add": (2, 3),
                 "view": (3, 4),
             }
+            if key != "view":
+                try:
+                    self._detach_view_left_widget()
+                except Exception:
+                    pass
+
             left_idx, right_idx = idx_map.get(key, (0, 0))
             self.left_stack.setCurrentIndex(left_idx)
             self.right_stack.setCurrentIndex(right_idx)
             self.right_heading.setText(self.top_buttons[key].text())
+
+            if key == "view":
+                try:
+                    self._attach_view_left_widget()
+                except Exception:
+                    pass
+
             cb = self.button_callbacks.get(key)
             if cb:
                 try:
                     cb()
                 except Exception:
                     pass
+
         return handler
+
+    def _on_view_apply_sql(self, sql: str):
+        try:
+            if self.active_view_result_widget is not None:
+                self.active_view_result_widget.setParent(None)
+                self.active_view_result_widget.deleteLater()
+                self.active_view_result_widget = None
+        except Exception:
+            pass
+
+        if self.view_container_layout is not None:
+            self._clear_layout(self.view_container_layout)
+
+        try:
+            tv = TableResultWidget(self.db, sql, parent=self.view_container_page)
+            self.view_container_layout.addWidget(tv)
+            tv.show()
+            self.active_view_result_widget = tv
+        except Exception as e:
+            print("Error creating TableResultWidget:", e)
+            QMessageBox.critical(self, "Error", f"Cannot show table result: {e}")
+            return
+
+        try:
+            idx = self.right_stack.indexOf(self.view_container_page)
+            if idx != -1:
+                self.right_stack.setCurrentIndex(idx)
+        except Exception:
+            pass
+
+        try:
+            self.left_stack.setCurrentIndex(3)
+        except Exception:
+            pass
 
     def show_context(self, key: str):
         if key in [k for k, _ in self.BUTTONS]:
@@ -303,74 +432,340 @@ class AppMainWindow(QMainWindow):
 
     def apply_styles(self):
         base = """
-        QMainWindow, QWidget { font-family: 'Segoe UI', Roboto, Arial, sans-serif; font-size: 13px; color: #222; background: #f5f7fa; }
+        QMainWindow, QWidget { 
+            font-family: 'Segoe UI', Roboto, Arial, sans-serif; 
+            font-size: 13px; 
+            color: #2d3748; 
+            background: #f7fafc; 
+        }
 
-        QFrame#topBar { background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #ffffff, stop:1 #f3f6fb); border-bottom: 1px solid #e6eef8; }
+        QFrame#topBar { 
+            background: #ffffff; 
+            border-bottom: 1px solid #e2e8f0; 
+            padding: 4px 0px;
+        }
 
-        QLabel#appTitle { font-weight:600; font-size:16px; color: #1f2d3d; }
+        QLabel#appTitle { 
+            font-weight: 600; 
+            font-size: 16px; 
+            color: #1a202c; 
+        }
+
+        QScrollBar:vertical {
+            background: #f8f9fa;
+            width: 10px;
+            margin: 0px;
+            border-radius: 5px;
+        }
+
+        QScrollBar::handle:vertical {
+            background: #cbd5e0;
+            border-radius: 5px;
+            min-height: 20px;
+        }
+
+        QScrollBar::handle:vertical:hover {
+            background: #a0aec0;
+        }
+
+        QScrollBar::handle:vertical:pressed {
+            background: #718096;
+        }
+
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+            height: 0px;
+        }
+
+        QScrollBar:horizontal {
+            background: #f8f9fa;
+            height: 10px;
+            margin: 0px;
+            border-radius: 5px;
+        }
+
+        QScrollBar::handle:horizontal {
+            background: #cbd5e0;
+            border-radius: 5px;
+            min-width: 20px;
+        }
+
+        QScrollBar::handle:horizontal:hover {
+            background: #a0aec0;
+        }
+
+        QCheckBox {
+            spacing: 6px;
+            color: #4a5568;
+        }
+
+        QCheckBox::indicator {
+            width: 16px;
+            height: 16px;
+            border: 1px solid #cbd5e0;
+            border-radius: 3px;
+            background: #ffffff;
+        }
+
+        QCheckBox::indicator:hover {
+            border: 1px solid #a0aec0;
+        }
+
+        QCheckBox::indicator:checked {
+            background: #4299e1;
+            border: 1px solid #4299e1;
+        }
+
+        QCheckBox::indicator:checked:hover {
+            background: #3182ce;
+            border: 1px solid #3182ce;
+        }
+
+        QCheckBox::indicator:checked:disabled {
+            background: #a0aec0;
+            border: 1px solid #a0aec0;
+        }
+
+        QCheckBox::indicator:unchecked:disabled {
+            background: #edf2f7;
+            border: 1px solid #e2e8f0;
+        }
 
         QPushButton {
-            min-height: 28px;
-            border-radius: 8px;
+            min-height: 30px;
+            border-radius: 6px;
             padding: 6px 12px;
-            border: 1px solid rgba(34,45,61,0.07);
-            background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffffff, stop:1 #f7fbff);
-            transition: all 100ms ease;
+            border: 1px solid #e2e8f0;
+            background: #ffffff;
+            color: #4a5568;
+            font-weight: 500;
         }
+
         QPushButton:hover {
-            transform: translateY(-1px);
-            border: 1px solid rgba(34,45,61,0.12);
-            background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #ffffff, stop:1 #eef6ff);
+            background: #edf2f7;
+            border: 1px solid #cbd5e0;
         }
+
         QPushButton:pressed {
-            transform: translateY(0);
-            padding-top:7px;
-            padding-bottom:5px;
-            background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #eaf2ff, stop:1 #dfeeff);
-            border: 1px solid rgba(34,45,61,0.14);
+            background: #e2e8f0;
+            border: 1px solid #a0aec0;
         }
 
         QPushButton:focus {
-            outline: none;
-            border: 1px solid #7aa7ff;
-            box-shadow: none; /* Qt CSS не поддерживает настоящие box-shadow, используем эффект через GraphicsEffect в коде */
+            border: 1px solid #4299e1;
         }
 
         QPushButton#topBtn_connect, QPushButton#topBtn_migrate, QPushButton#topBtn_add, QPushButton#topBtn_view {
-            border-radius: 6px;
+            border-radius: 4px;
             padding: 6px 10px;
             background: transparent;
-        }
-        QPushButton#topBtn_connect:hover, QPushButton#topBtn_migrate:hover, QPushButton#topBtn_add:hover, QPushButton#topBtn_view:hover {
-            background: rgba(30,58,120,0.04);
+            border: none;
+            color: #4a5568;
         }
 
-        QWidget#leftPanel { background: transparent; }
+        QPushButton#topBtn_connect:hover, QPushButton#topBtn_migrate:hover, QPushButton#topBtn_add:hover, QPushButton#topBtn_view:hover {
+            background: #ebf8ff;
+            color: #3182ce;
+        }
+
+        QWidget#leftPanel { 
+            background: transparent; 
+        }
+
         QWidget#buttonsContainer QPushButton {
             text-align: left;
-            padding-left: 12px;
-            border: 1px solid rgba(34,45,61,0.04);
+            padding: 10px 12px;
+            border: none;
+            border-radius: 4px;
+            margin: 1px 2px;
             background: #ffffff;
         }
+
         QWidget#buttonsContainer QPushButton:hover {
-            background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #fbfdff, stop:1 #f3f9ff);
+            background: #ebf8ff;
+            color: #3182ce;
         }
 
-        QLineEdit, QComboBox, QTextEdit { border: 1px solid #e0e6ec; border-radius: 6px; padding: 6px; background: #fff; }
+        QWidget#buttonsContainer QPushButton:pressed {
+            background: #bee3f8;
+        }
 
-        QLabel.small { font-size: 11px; color: #7a8794; }
+        QLineEdit, QComboBox, QTextEdit { 
+            border: 1px solid #e2e8f0; 
+            border-radius: 4px; 
+            padding: 6px 8px; 
+            background: #ffffff; 
+            font-size: 13px;
+            selection-background-color: #4299e1;
+        }
+
+        QLineEdit:focus, QComboBox:focus, QTextEdit:focus {
+            border: 1px solid #4299e1;
+        }
+
+        QLineEdit:hover, QComboBox:hover, QTextEdit:hover {
+            border: 1px solid #cbd5e0;
+        }
+
+        QComboBox::drop-down {
+            border: none;
+            width: 20px;
+        }
+
+        QComboBox::down-arrow {
+            border-left: 4px solid transparent;
+            border-right: 4px solid transparent;
+            border-top: 4px solid #718096;
+            width: 0px;
+            height: 0px;
+        }
+
+        QComboBox QAbstractItemView {
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 4px;
+            selection-background-color: #4299e1;
+            selection-color: white;
+        }
+
+        QLabel.small { 
+            font-size: 11px; 
+            color: #718096; 
+        }
+
+        QProgressBar {
+            border: 1px solid #e2e8f0;
+            border-radius: 3px;
+            background: #f7fafc;
+            text-align: center;
+        }
+
+        QProgressBar::chunk {
+            background: #4299e1;
+            border-radius: 2px;
+        }
+
+        QListView, QTreeView, QTableView {
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 4px;
+            outline: none;
+        }
+
+        QHeaderView::section {
+            background: #f7fafc;
+            padding: 6px 8px;
+            border: none;
+            border-right: 1px solid #e2e8f0;
+            border-bottom: 1px solid #e2e8f0;
+            font-weight: 600;
+            color: #4a5568;
+        }
+
+        QHeaderView::section:last {
+            border-right: none;
+        }
+
+        QTreeView::item, QListView::item, QTableView::item {
+            padding: 6px 8px;
+            border-bottom: 1px solid transparent;
+            color: #4a5568;
+        }
+
+        QTreeView::item:selected, QListView::item:selected, QTableView::item:selected {
+            background: #4299e1;
+            color: #ffffff;
+            border-radius: 2px;
+        }
+
+        QTreeView::item:hover, QListView::item:hover, QTableView::item:hover {
+            background: #ebf8ff;
+            border-bottom: 1px solid #bee3f8;
+        }
+
+        QTreeView::item:selected:hover, QListView::item:selected:hover, QTableView::item:selected:hover {
+            background: #3182ce;
+            color: #ffffff;
+        }
+
+        QTreeView::branch:has-siblings:!adjoins-item {
+            border-image: url(vline.png) 0;
+        }
+
+        QTreeView::branch:has-siblings:adjoins-item {
+            border-image: url(branch-more.png) 0;
+        }
+
+        QTreeView::branch:!has-children:!has-siblings:adjoins-item {
+            border-image: url(branch-end.png) 0;
+        }
+
+        QTreeView::branch:has-children:!has-siblings:closed,
+        QTreeView::branch:closed:has-children:has-siblings {
+            border-image: none;
+            image: url(branch-closed.png);
+        }
+
+        QTreeView::branch:open:has-children:!has-siblings,
+        QTreeView::branch:open:has-children:has-siblings  {
+            border-image: none;
+            image: url(branch-open.png);
+        }
         """
         self.setStyleSheet(base)
 
 
 def main():
     app = QApplication(sys.argv)
-    db = Database()
-    w = AppMainWindow(db=db)
-    w.resize(QSize(1200, 550))
-    w.show()
-    sys.exit(app.exec_())
 
+    try:
+        db = Database()
+        w = AppMainWindow(db=db)
+        w.resize(1200, 550)
+        w.show()
+        sys.exit(app.exec())
+    except Exception:
+        print('вв')
 
+    connected_params: Dict[str, str] = {}
+
+    def connect_callback(params: Dict[str, str]) -> bool:
+        try:
+            temp_db = Database(params)
+            temp_db.close()
+            connected_params.update(params)
+            return True
+        except Exception:
+            return False
+
+    def recreate_callback(connection_info: Dict[str, str]) -> bool:
+        try:
+            tmp = Database(connection_info)
+            result = tmp.recreate_tables()
+            tmp.close()
+            return bool(result)
+        except Exception:
+            return False
+    dlg = ConnectionDialog(
+        None,
+        connect_callback=connect_callback,
+        recreate_callback=recreate_callback
+    )
+    def _on_connected(info: Dict[str, str]):
+        connected_params.update(info)
+        dlg.accept()
+    dlg.connected.connect(_on_connected)
+    dlg.exec()
+    if not connected_params:
+        QMessageBox.critical(None, "Ошибка", "Подключение не выполнено. Приложение будет закрыто.")
+        sys.exit(1)
+    try:
+        db = Database(connected_params)
+        w = AppMainWindow(db=db)
+        w.resize(1200, 550)
+        w.show()
+        sys.exit(app.exec())
+    except Exception:
+        QMessageBox.critical(None, "Ошибка", "Не удалось создать главное окно после подключения к БД.")
+        sys.exit(1)
 if __name__ == "__main__":
     main()
