@@ -1,10 +1,187 @@
-from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
-    QDialog, QFormLayout, QLineEdit, QPushButton, QVBoxLayout, QMessageBox, QLabel, QWidget, QHBoxLayout, QComboBox,
-    QCheckBox, QSizePolicy, QSpinBox
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QWidget,
+    QLineEdit, QComboBox, QCheckBox, QSpinBox, QMessageBox, QScrollArea,
+    QSizePolicy
 )
+from PySide6.QtCore import Signal, Qt
+from PySide6.QtGui import QFont
+import re
 
+class RenameTableDialog(QDialog):
+    def __init__(self, current_name: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Переименовать таблицу")
+        self.layout = QVBoxLayout(self)
+        self.input = QLineEdit(current_name)
+        self.layout.addWidget(QLabel("Новое имя:"))
+        self.layout.addWidget(self.input)
+        row = QHBoxLayout()
+        btn_ok = QPushButton("OK")
+        btn_cancel = QPushButton("Отмена")
+        row.addStretch(1)
+        row.addWidget(btn_cancel)
+        row.addWidget(btn_ok)
+        self.layout.addLayout(row)
+        btn_ok.clicked.connect(self.accept)
+        btn_cancel.clicked.connect(self.reject)
 
+    def new_name(self):
+        return self.input.text().strip()
+
+class ColumnEditorDialog(QDialog):
+    def __init__(self, column_data=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Колонка")
+        self.layout = QVBoxLayout(self)
+        self.form = QVBoxLayout()
+        self.name_edit = QLineEdit(column_data.get('name', '') if column_data else "")
+        self.type_combo = QComboBox()
+        base_types = ["INTEGER", "TEXT", "REAL", "DATE", "BOOLEAN", "ARRAY"]
+        if column_data is None:
+            items = base_types + ["ENUM"]
+        else:
+            if column_data.get('type') == 'ENUM':
+                items = ["ENUM"]
+            else:
+                items = base_types
+        self.type_combo.addItems(items)
+        if column_data:
+            self.type_combo.setCurrentText(column_data.get('type', 'TEXT'))
+        self.not_null = QCheckBox("NOT NULL")
+        self.unique = QCheckBox("UNIQUE")
+        self.pk = QCheckBox("PK")
+        if column_data:
+            self.not_null.setChecked(column_data.get('not_null', False))
+            self.unique.setChecked(column_data.get('unique', False))
+            self.pk.setChecked(column_data.get('primary_key', False))
+        self.default_edit = QLineEdit(column_data.get('default', '') if column_data and column_data.get('default') is not None else "")
+        self.default_edit.setPlaceholderText("DEFAULT value")
+        self.check_edit = QLineEdit(column_data.get('check', '') if column_data else "")
+        self.check_edit.setPlaceholderText("CHECK condition")
+        self.length_spin = QSpinBox()
+        self.length_spin.setRange(0, 1000000)
+        if column_data and column_data.get('length') is not None:
+            try:
+                self.length_spin.setValue(int(column_data.get('length')))
+            except:
+                pass
+        self.array_elem_combo = QComboBox()
+        self.array_elem_combo.addItems(["INTEGER", "TEXT", "REAL", "DATE", "BOOLEAN"])
+        if column_data and column_data.get('array_elem_type'):
+            self.array_elem_combo.setCurrentText(column_data.get('array_elem_type'))
+        self.fk_table = QLineEdit(column_data.get('fk_table', '') if column_data else "")
+        self.fk_column = QLineEdit(column_data.get('fk_column', '') if column_data else "")
+
+        self.length_label = QLabel("Length:")
+        self.array_label = QLabel("Array elem type:")
+        self.default_label = QLabel("Default:")
+
+        self.form.addWidget(QLabel("Name:"))
+        self.form.addWidget(self.name_edit)
+        self.form.addWidget(QLabel("Type:"))
+        self.form.addWidget(self.type_combo)
+        self.form.addWidget(self.not_null)
+        self.form.addWidget(self.unique)
+        self.form.addWidget(self.pk)
+        self.form.addWidget(self.default_label)
+        self.form.addWidget(self.default_edit)
+        self.form.addWidget(QLabel("Check:"))
+        self.form.addWidget(self.check_edit)
+        self.form.addWidget(self.length_label)
+        self.form.addWidget(self.length_spin)
+        self.form.addWidget(self.array_label)
+        self.form.addWidget(self.array_elem_combo)
+        self.form.addWidget(QLabel("FK Table:"))
+        self.form.addWidget(self.fk_table)
+        self.form.addWidget(QLabel("FK Column:"))
+        self.form.addWidget(self.fk_column)
+        self.layout.addLayout(self.form)
+        row = QHBoxLayout()
+        self.btn_ok = QPushButton("OK")
+        btn_cancel = QPushButton("Отмена")
+        row.addStretch(1)
+        row.addWidget(btn_cancel)
+        row.addWidget(self.btn_ok)
+        self.layout.addLayout(row)
+        self.btn_ok.clicked.connect(self.accept)
+        btn_cancel.clicked.connect(self.reject)
+
+        self.type_combo.currentTextChanged.connect(self.update_fields_visibility)
+        self.pk.toggled.connect(self.on_pk_toggled)
+        self.update_fields_visibility(self.type_combo.currentText())
+        if self.pk.isChecked():
+            self.on_pk_toggled(True)
+        if column_data and column_data.get('type') == 'ENUM':
+            self.set_enum_mode()
+
+    def update_fields_visibility(self, txt):
+        t = txt.upper() if txt else ""
+        is_text = "TEXT" in t and "ARRAY" not in t and "ENUM" not in t
+        is_array = "ARRAY" in t
+        self.length_label.setVisible(is_text)
+        self.length_spin.setVisible(is_text)
+        self.array_label.setVisible(is_array)
+        self.array_elem_combo.setVisible(is_array)
+
+    def on_pk_toggled(self, checked):
+        if checked:
+            self.not_null.setChecked(True)
+            self.unique.setChecked(True)
+            self.not_null.setEnabled(False)
+            self.unique.setEnabled(False)
+        else:
+            self.not_null.setEnabled(True)
+            self.unique.setEnabled(True)
+
+    def set_enum_mode(self):
+        self.type_combo.setCurrentText("ENUM")
+        self.type_combo.setEnabled(False)
+        self.name_edit.setEnabled(False)
+        self.not_null.setEnabled(False)
+        self.unique.setEnabled(False)
+        self.pk.setEnabled(False)
+        self.default_edit.setEnabled(False)
+        self.check_edit.setEnabled(False)
+        self.length_spin.setEnabled(False)
+        self.array_elem_combo.setEnabled(False)
+        self.fk_table.setEnabled(False)
+        self.fk_column.setEnabled(False)
+        self.btn_ok.setEnabled(False)
+
+    def get_data(self):
+        default_val = self.default_edit.text().strip() if self.default_edit.text().strip() != "" else None
+        check_val = self.check_edit.text().strip() if self.check_edit.text().strip() != "" else None
+        length_val = int(self.length_spin.value()) if self.length_spin.value() else None
+        array_elem = self.array_elem_combo.currentText() if self.array_elem_combo.currentText() else None
+        return {
+            'name': self.name_edit.text().strip(),
+            'type': self.type_combo.currentText(),
+            'not_null': self.not_null.isChecked(),
+            'unique': self.unique.isChecked(),
+            'primary_key': self.pk.isChecked(),
+            'default': default_val,
+            'check': check_val,
+            'length': length_val,
+            'array_elem_type': array_elem,
+            'fk_table': self.fk_table.text().strip() if self.fk_table.text().strip() != "" else None,
+            'fk_column': self.fk_column.text().strip() if self.fk_column.text().strip() != "" else None
+        }
+
+class ConfirmDialog(QDialog):
+    def __init__(self, text: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Подтвердите")
+        self.layout = QVBoxLayout(self)
+        self.layout.addWidget(QLabel(text))
+        row = QHBoxLayout()
+        btn_ok = QPushButton("Да")
+        btn_cancel = QPushButton("Нет")
+        row.addStretch(1)
+        row.addWidget(btn_cancel)
+        row.addWidget(btn_ok)
+        self.layout.addLayout(row)
+        btn_ok.clicked.connect(self.accept)
+        btn_cancel.clicked.connect(self.reject)
 
 class AlterTableDialog(QDialog):
     tablesChanged = Signal(str)
@@ -12,560 +189,333 @@ class AlterTableDialog(QDialog):
     def __init__(self, table_name: str, db, table_manager = None, parent=None):
         super().__init__(parent)
         self.db = db
-        self.table = db.get_table(table_name)
-        self.setWindowTitle(f"Alter table — {table_name}")
+        self.table_name = table_name
         self.table_manager = table_manager
-
+        self.setWindowTitle(f"Alter table — {table_name}")
         self.layout = QVBoxLayout(self)
-        self.form_layout = QFormLayout()
+        top_row = QHBoxLayout()
+        self.label_table = QLabel(f"Table: {table_name}")
+        btn_rename = QPushButton("Переименовать")
+        top_row.addWidget(self.label_table)
+        top_row.addStretch(1)
+        top_row.addWidget(btn_rename)
+        self.layout.addLayout(top_row)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.columns_container = QWidget()
+        self.columns_layout = QVBoxLayout(self.columns_container)
+        self.columns_layout.setContentsMargins(2,2,2,2)
+        self.columns_layout.setSpacing(2)
+        self.scroll.setWidget(self.columns_container)
+        self.layout.addWidget(self.scroll)
+        bottom_row = QHBoxLayout()
+        self.btn_add = QPushButton("Добавить столбец")
+        self.btn_close = QPushButton("Закрыть")
+        bottom_row.addStretch(1)
+        bottom_row.addWidget(self.btn_add)
+        bottom_row.addWidget(self.btn_close)
+        self.layout.addLayout(bottom_row)
+        btn_rename.clicked.connect(self.handle_rename)
+        self.btn_add.clicked.connect(self.handle_add)
+        self.btn_close.clicked.connect(self.reject)
+        self.refresh_from_db()
 
-        self.table_name_edit = QLineEdit(table_name)
-        self.form_layout.addRow("Table name:", self.table_name_edit)
-
-        self.columns_widget = QWidget()
-        self.columns_layout = QVBoxLayout(self.columns_widget)
-        self.columns_layout.setContentsMargins(0, 0, 0, 0)
-
-        self.column_widgets = {}
-        self.next_column_id = 1
-        self.old_table_name = self.table_name_edit.text()
-        self.old_data = {}
-
+    def refresh_from_db(self):
+        try:
+            self.table = self.db.get_table(self.table_name)
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось получить метаданные: {e}")
+            return
+        self.label_table.setText(f"Table: {self.table_name}")
+        for i in reversed(range(self.columns_layout.count())):
+            item = self.columns_layout.itemAt(i)
+            w = item.widget() if item else None
+            if w:
+                w.setParent(None)
+                w.deleteLater()
+        self.column_rows = []
+        idx = 0
+        uniques = []
+        try:
+            uniques = [i['column_names'][0] for i in self.db.insp.get_unique_constraints(self.table.name)]
+        except:
+            uniques = []
         for col in self.table.columns:
-            column_id, column_widget = self.add_column_widget(col)
-            self.old_data[column_id] = self.get_column_data(column_widget)
-
-        self.form_layout.addRow("Columns:", self.columns_widget)
-
-        btn_add_column = QPushButton("Add column")
-        btn_add_column.clicked.connect(lambda: self.add_column_widget())
-
-        self.layout.addLayout(self.form_layout)
-        self.layout.addWidget(btn_add_column)
-
-        btn_row = QHBoxLayout()
-        self.btn_apply = QPushButton("Apply")
-        self.btn_cancel = QPushButton("Cancel")
-        btn_row.addStretch(1)
-        btn_row.addWidget(self.btn_cancel)
-        btn_row.addWidget(self.btn_apply)
-        self.layout.addLayout(btn_row)
-
-        self.btn_apply.clicked.connect(self.on_apply)
-        self.btn_cancel.clicked.connect(self.reject)
-
-    def add_column_widget(self, col=None):
-        import re
-        widget = QWidget()
-        layout = QHBoxLayout(widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        if not hasattr(self, 'next_column_id'):
-            self.next_column_id = 0
-
-        column_id = self.next_column_id
-        self.next_column_id += 1
-
-        widget.column_id = column_id
-
-        name_edit = QLineEdit(col.name if col is not None else "")
-        type_combo = QComboBox()
-        type_combo.addItems(["INTEGER", "TEXT", "REAL", "DATE", "BOOLEAN", "ARRAY", "ENUM"])
-
-        not_null_check = QCheckBox("NOT NULL")
-        unique_check = QCheckBox("UNIQUE")
-        pk_check = QCheckBox("PK")
-        # unique_check.toggled.connect(lambda state: print(f"Unique toggled: {state}"))
-        # pk_check.toggled.connect(lambda state: print(f"PK toggled: {state}"))
-        # not_null_check.toggled.connect(lambda state: print(f"NOT NULL toggled: {state}"))
-
-        default_edit = QLineEdit()
-        default_edit.setPlaceholderText("DEFAULT value")
-        default_bool = QCheckBox("DEFAULT")
-        default_bool.setVisible(False)
-
-        check_edit = QLineEdit()
-        check_edit.setPlaceholderText("CHECK condition")
-
-        length_label = QLabel("Length:")
-        length_spin = QSpinBox()
-        length_spin.setRange(0, 1000000)
-        length_label.setVisible(False)
-        length_spin.setVisible(False)
-
-        array_label = QLabel("Array elem type:")
-        array_elem_combo = QComboBox()
-        array_elem_combo.addItems(["INTEGER", "TEXT", "REAL", "DATE", "BOOLEAN"])
-        array_label.setVisible(False)
-        array_elem_combo.setVisible(False)
-
-        fk_edit = QLineEdit()
-        fk_edit.setPlaceholderText("FK table")
-
-        fk_column_edit = QLineEdit()
-        fk_column_edit.setPlaceholderText("FK column")
-
-        btn_remove = QPushButton("X", styleSheet="color: red;")
-        text_edits = [name_edit, default_edit, check_edit, fk_edit, fk_column_edit]
-
-        for edit in text_edits:
-            edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            edit.setMinimumWidth(95)
-
-        widget.not_null_check = not_null_check
-        widget.unique_check = unique_check
-        widget.pk_check = pk_check
-        widget.default_edit = default_edit
-        widget.default_bool = default_bool
-        widget.check_edit = check_edit
-        widget.length_spin = length_spin
-        widget.length_label = length_label
-        widget.array_elem_combo = array_elem_combo
-        widget.array_label = array_label
-
-        def enforce_pk_state():
-            widgets = list(self.column_widgets.values())
-            active = None
-            for w in widgets:
-                if hasattr(w, 'pk_check') and w.pk_check.isChecked():
-                    active = w
-                    break
-            if active:
-                for w in widgets:
-                    if w is active:
-                        if hasattr(w, 'unique_check'):
-                            if not w.unique_check.isChecked():
-                                w.unique_check.blockSignals(True)
-                                w.unique_check.setChecked(True)
-                                w.unique_check.blockSignals(False)
-                            if w.unique_check.isEnabled():
-                                w.unique_check.setEnabled(False)
-                        if hasattr(w, 'not_null_check'):
-                            if not w.not_null_check.isChecked():
-                                w.not_null_check.blockSignals(True)
-                                w.not_null_check.setChecked(True)
-                                w.not_null_check.blockSignals(False)
-                            if w.not_null_check.isEnabled():
-                                w.not_null_check.setEnabled(False)
-                        if hasattr(w, 'default_edit'):
-                            if w.default_edit.isEnabled():
-                                w.default_edit.clear()
-                                w.default_edit.setEnabled(False)
-                        if hasattr(w, 'default_bool'):
-                            if w.default_bool.isEnabled():
-                                w.default_bool.setChecked(False)
-                                w.default_bool.setEnabled(False)
-                        if hasattr(w, 'check_edit'):
-                            if w.check_edit.isEnabled():
-                                w.check_edit.clear()
-                                w.check_edit.setEnabled(False)
-                    else:
-                        if hasattr(w, 'pk_check'):
-                            if w.pk_check.isChecked():
-                                w.pk_check.blockSignals(True)
-                                w.pk_check.setChecked(False)
-                                w.pk_check.blockSignals(False)
-                            if w.pk_check.isEnabled():
-                                w.pk_check.setEnabled(False)
-            else:
-                for w in widgets:
-                    if hasattr(w, 'pk_check') and not w.pk_check.isEnabled():
-                        w.pk_check.setEnabled(True)
-                    if hasattr(w, 'unique_check'):
-                        if not w.unique_check.isEnabled():
-                            w.unique_check.setEnabled(True)
-                    if hasattr(w, 'not_null_check'):
-                        if not w.not_null_check.isEnabled():
-                            w.not_null_check.setEnabled(True)
-                    if hasattr(w, 'default_edit'):
-                        if not w.default_edit.isEnabled():
-                            w.default_edit.setEnabled(True)
-                    if hasattr(w, 'default_bool'):
-                        if not w.default_bool.isEnabled():
-                            w.default_bool.setEnabled(True)
-                    if hasattr(w, 'check_edit'):
-                        if not w.check_edit.isEnabled():
-                            w.check_edit.setEnabled(True)
-                    if hasattr(w, 'length_spin'):
-                        if not w.length_spin.isEnabled():
-                            w.length_spin.setEnabled(True)
-                    if hasattr(w, 'length_label'):
-                        if not w.length_label.isEnabled():
-                            w.length_label.setEnabled(True)
-                    if hasattr(w, 'array_elem_combo'):
-                        if not w.array_elem_combo.isEnabled():
-                            w.array_elem_combo.setEnabled(True)
-                    if hasattr(w, 'array_label'):
-                        if not w.array_label.isEnabled():
-                            w.array_label.setEnabled(True)
-
-        def pk_toggled_handler(state, w=widget):
-            if state:
-                for other in list(self.column_widgets.values()):
-                    if other is not w and hasattr(other, 'pk_check') and other.pk_check.isChecked():
-                        w.pk_check.blockSignals(True)
-                        w.pk_check.setChecked(False)
-                        w.pk_check.blockSignals(False)
-                        return
-            enforce_pk_state()
-
-        pk_check.toggled.connect(lambda state, w=widget: pk_toggled_handler(state, w))
-
-        def apply_type_logic(t):
-            t_upper = t.upper() if isinstance(t, str) else str(t).upper()
-            if t_upper == "ENUM":
-                if widget.pk_check.isChecked():
-                    widget.pk_check.blockSignals(True)
-                    widget.pk_check.setChecked(False)
-                    widget.pk_check.blockSignals(False)
-                if widget.unique_check.isEnabled():
-                    widget.unique_check.setEnabled(False)
-                if widget.not_null_check.isEnabled():
-                    widget.not_null_check.setEnabled(False)
-                if widget.pk_check.isEnabled():
-                    widget.pk_check.setEnabled(False)
-                if widget.default_edit.isEnabled():
-                    widget.default_edit.clear()
-                    widget.default_edit.setEnabled(False)
-                if widget.default_bool.isEnabled():
-                    widget.default_bool.setChecked(False)
-                    widget.default_bool.setEnabled(False)
-                if widget.check_edit.isEnabled():
-                    widget.check_edit.clear()
-                    widget.check_edit.setEnabled(False)
-                if widget.length_spin.isVisible():
-                    widget.length_spin.setVisible(False)
-                if widget.length_label.isVisible():
-                    widget.length_label.setVisible(False)
-                if widget.array_elem_combo.isVisible():
-                    widget.array_elem_combo.setVisible(False)
-                if widget.array_label.isVisible():
-                    widget.array_label.setVisible(False)
-                enforce_pk_state()
-                return
-            if t_upper == "BOOLEAN":
-                if widget.default_edit.isVisible():
-                    widget.default_edit.setVisible(False)
-                    widget.default_edit.setEnabled(False)
-                if not widget.default_bool.isVisible():
-                    widget.default_bool.setVisible(True)
-                    widget.default_bool.setEnabled(True)
-                if widget.check_edit.isVisible():
-                    widget.check_edit.setVisible(False)
-                    widget.check_edit.setEnabled(False)
-                if widget.length_spin.isVisible():
-                    widget.length_spin.setVisible(False)
-                if widget.length_label.isVisible():
-                    widget.length_label.setVisible(False)
-                if widget.array_elem_combo.isVisible():
-                    widget.array_elem_combo.setVisible(False)
-                if widget.array_label.isVisible():
-                    widget.array_label.setVisible(False)
-            elif t_upper == "TEXT":
-                if not widget.default_edit.isVisible():
-                    widget.default_edit.setVisible(True)
-                    widget.default_edit.setEnabled(True)
-                if widget.default_bool.isVisible():
-                    widget.default_bool.setVisible(False)
-                    widget.default_bool.setEnabled(False)
-                if not widget.check_edit.isVisible():
-                    widget.check_edit.setVisible(True)
-                    widget.check_edit.setEnabled(True)
-                if not widget.length_spin.isVisible():
-                    widget.length_spin.setVisible(True)
-                if not widget.length_label.isVisible():
-                    widget.length_label.setVisible(True)
-                if widget.array_elem_combo.isVisible():
-                    widget.array_elem_combo.setVisible(False)
-                if widget.array_label.isVisible():
-                    widget.array_label.setVisible(False)
-            elif t_upper == "ARRAY":
-                if not widget.default_edit.isVisible():
-                    widget.default_edit.setVisible(True)
-                    widget.default_edit.setEnabled(True)
-                if widget.default_bool.isVisible():
-                    widget.default_bool.setVisible(False)
-                    widget.default_bool.setEnabled(False)
-                if not widget.check_edit.isVisible():
-                    widget.check_edit.setVisible(True)
-                    widget.check_edit.setEnabled(True)
-                if widget.length_spin.isVisible():
-                    widget.length_spin.setVisible(False)
-                if widget.length_label.isVisible():
-                    widget.length_label.setVisible(False)
-                if not widget.array_elem_combo.isVisible():
-                    widget.array_elem_combo.setVisible(True)
-                    widget.array_elem_combo.setEnabled(True)
-                if not widget.array_label.isVisible():
-                    widget.array_label.setVisible(True)
-            else:
-                if not widget.default_edit.isVisible():
-                    widget.default_edit.setVisible(True)
-                    widget.default_edit.setEnabled(True)
-                if widget.default_bool.isVisible():
-                    widget.default_bool.setVisible(False)
-                    widget.default_bool.setEnabled(False)
-                if not widget.check_edit.isVisible():
-                    widget.check_edit.setVisible(True)
-                    widget.check_edit.setEnabled(True)
-                if widget.length_spin.isVisible():
-                    widget.length_spin.setVisible(False)
-                if widget.length_label.isVisible():
-                    widget.length_label.setVisible(False)
-                if widget.array_elem_combo.isVisible():
-                    widget.array_elem_combo.setVisible(False)
-                if widget.array_label.isVisible():
-                    widget.array_label.setVisible(False)
-            enforce_pk_state()
-
-        type_combo.currentTextChanged.connect(lambda t: apply_type_logic(t))
-
-        def on_remove_clicked(w=widget):
-            was_pk = False
-            try:
-                was_pk = bool(w.pk_check.isChecked())
-            except Exception:
-                was_pk = False
-            self.remove_column_widget(w)
-            if was_pk:
-                enforce_pk_state()
-
-        btn_remove.clicked.connect(lambda _checked, w=widget: on_remove_clicked(w))
-
-        if col is not None:
-
+            row = QWidget()
+            hl = QHBoxLayout(row)
+            hl.setContentsMargins(6,6,6,6)
+            hl.setSpacing(8)
+            name_label = QLabel(col.name)
+            f = QFont()
+            f.setBold(True)
+            name_label.setFont(f)
+            name_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            name_label.setMaximumWidth(140)
             try:
                 type_text = str(col.type)
-                tt_upper = type_text.upper()
-                if "CHAR" in tt_upper or "VARCHAR" in tt_upper or "STRING" in tt_upper:
-                    type_combo.setCurrentText("TEXT")
-                    m = re.search(r'\(\s*(\d+)\s*\)', type_text)
-                    if m:
-                        length_spin.setValue(int(m.group(1)))
-                        length_label.setVisible(True)
-                        length_spin.setVisible(True)
-                    else:
-                        check_constraints = [f"({check.sqltext})" for check in col.table.constraints
-                                             if hasattr(check, 'sqltext') and col.name in str(check.sqltext)]
-                        check_text = " ".join(check_constraints)
-                        m2 = re.search(r'length\(\s*{}[^\)]*\)\s*(?:<=|<)\s*(\d+)'.format(re.escape(col.name)),
-                                       check_text, re.IGNORECASE)
-                        if not m2:
-                            m2 = re.search(r'char_length\(\s*{}[^\)]*\)\s*(?:<=|<)\s*(\d+)'.format(re.escape(col.name)),
-                                           check_text, re.IGNORECASE)
-                        if not m2:
-                            m2 = re.search(r'{}\s*(?:<=|<)\s*(\d+)'.format(re.escape(col.name)), check_text,
-                                           re.IGNORECASE)
-                        if m2:
-                            length_spin.setValue(int(m2.group(1)))
-                            length_label.setVisible(True)
-                            length_spin.setVisible(True)
-                else:
-                    mapped = "TEXT" if ("TEXT" in tt_upper) else None
-                    if mapped:
-                        type_combo.setCurrentText(mapped)
-                    else:
-                        simple = None
-                        if "INTEGER" in tt_upper or "INT" in tt_upper:
-                            simple = "INTEGER"
-                        elif "REAL" in tt_upper or "FLOAT" in tt_upper or "DOUBLE" in tt_upper:
-                            simple = "REAL"
-                        elif "DATE" in tt_upper or "TIME" in tt_upper:
-                            simple = "DATE"
-                        elif "BOOLEAN" in tt_upper or "BOOL" in tt_upper:
-                            simple = "BOOLEAN"
-                        elif "ARRAY" in tt_upper:
-                            simple = "ARRAY"
-                            array_elem_combo.setCurrentText(str(col.type.item_type))
-                        elif "ENUM" in tt_upper:
-                            simple = "ENUM"
-                        if simple:
-                            type_combo.setCurrentText(simple)
-                        else:
-                            type_combo.setCurrentText("TEXT")
             except:
+                type_text = ""
+            is_enum = False
+            if "ENUM" in type_text.upper():
+                is_enum = True
+            else:
                 try:
-                    type_combo.setCurrentText(str(col.type))
+                    if hasattr(col.type, 'enums') and getattr(col.type, 'enums') is not None:
+                        is_enum = True
                 except:
-                    type_combo.setCurrentText("TEXT")
-            not_null_check.setChecked(not col.nullable)
-            unique_check.setChecked(
-                bool(col.name in [i['column_names'][0] for i in self.db.insp.get_unique_constraints(self.table.name)]))
-            pk_check.setChecked(bool(col.primary_key))
+                    is_enum = False
+            meta_text = []
+            if is_enum:
+                meta_text.append("ENUM")
+            else:
+                meta_text.append(type_text)
+            meta_text.append("NOT NULL" if not col.nullable else "NULL")
+            if col.name in uniques:
+                meta_text.append("UNIQUE")
+            if getattr(col, "primary_key", False):
+                meta_text.append("PK")
+            default_txt = None
             try:
-                if col.server_default is not None:
-                    default_edit.setText(str(col.server_default.arg))
-
-                check_constraints = [f"({check.sqltext})" for check in col.table.constraints
-                                     if hasattr(check, 'sqltext') and col.name in str(check.sqltext)]
-                if check_constraints:
-                    check_edit.setText(check_constraints[0])
+                if getattr(col, "server_default", None) is not None:
+                    default_txt = str(col.server_default.arg)
+            except:
+                default_txt = None
+            if default_txt:
+                meta_text.append(f"DEFAULT={default_txt}")
+            fk_txt = None
+            try:
                 if hasattr(col, 'foreign_keys') and col.foreign_keys:
                     for fk in col.foreign_keys:
-                        fk_edit.setText(fk.column.table.name)
-                        fk_column_edit.setText(fk.column.name)
+                        fk_txt = f"{fk.column.table.name}({fk.column.name})"
+            except:
+                fk_txt = None
+            if fk_txt:
+                meta_text.append(f"FK={fk_txt}")
+            check_txt = None
+            try:
+                check_constraints = [f"({check.sqltext})" for check in col.table.constraints if hasattr(check, 'sqltext') and col.name in str(check.sqltext)]
+                if check_constraints:
+                    check_txt = check_constraints[0]
+            except:
+                check_txt = None
+            if check_txt:
+                meta_text.append(f"CHECK={check_txt}")
+            try:
+                m = re.search(r'\(\s*(\d+)\s*\)', type_text)
+                if m and not is_enum:
+                    meta_text.append(f"LEN={m.group(1)}")
             except:
                 pass
-
-        layout.addWidget(QLabel("Name:"))
-        layout.addWidget(name_edit, 1)
-        layout.addWidget(QLabel("Type:"))
-        layout.addWidget(type_combo, 1)
-        layout.addWidget(not_null_check, 1)
-        layout.addWidget(unique_check)
-        layout.addWidget(pk_check, 1)
-        layout.addWidget(QLabel("Default:"))
-        layout.addWidget(default_edit, 1)
-        layout.addWidget(default_bool)
-        layout.addWidget(QLabel("Check:"))
-        layout.addWidget(check_edit, 1)
-        layout.addWidget(length_label)
-        layout.addWidget(length_spin)
-        layout.addWidget(array_label)
-        layout.addWidget(array_elem_combo)
-        layout.addWidget(QLabel("FK Table:"))
-        layout.addWidget(fk_edit, 1)
-        layout.addWidget(QLabel("FK Column:"))
-        layout.addWidget(fk_column_edit, 1)
-        layout.addWidget(btn_remove)
-
-        self.columns_layout.addWidget(widget)
-        self.column_widgets[column_id] = widget
-
-        apply_type_logic(type_combo.currentText())
-        enforce_pk_state()
-
-        return column_id, widget
-
-    def get_column_data(self, widget):
-        children = widget.findChildren(QLineEdit) + widget.findChildren(QComboBox) + widget.findChildren(QCheckBox) + widget.findChildren(QSpinBox)
-
-        name_edit = None
-        type_combo = None
-        not_null_check = None
-        unique_check = None
-        pk_check = None
-        default_edit = None
-        default_bool = None
-        check_edit = None
-        fk_edit = None
-        fk_column_edit = None
-        length_spin = None
-        array_elem_combo = None
-
-        for child in children:
-            if isinstance(child, QLineEdit):
-                ph = (child.placeholderText() or "").strip()
-                if ph == "DEFAULT value":
-                    default_edit = child
-                elif ph == "CHECK condition":
-                    check_edit = child
-                elif ph == "FK table":
-                    fk_edit = child
-                elif ph == "FK column":
-                    fk_column_edit = child
-                else:
-                    if name_edit is None:
-                        name_edit = child
-            elif isinstance(child, QComboBox):
-                if type_combo is None:
-                    type_combo = child
-                else:
-                    array_elem_combo = child
-            elif isinstance(child, QCheckBox):
-                text = (child.text() or "").strip()
-                if text == "NOT NULL":
-                    not_null_check = child
-                elif text == "UNIQUE":
-                    unique_check = child
-                elif text == "PK":
-                    pk_check = child
-                elif text == "DEFAULT":
-                    default_bool = child
-            elif isinstance(child, QSpinBox):
-                if length_spin is None:
-                    length_spin = child
-
-        if name_edit and type_combo:
-            if default_bool is not None and getattr(default_bool, "isVisible", lambda: True)():
-                default_val = bool(default_bool.isChecked())
-            elif default_edit is not None and getattr(default_edit, "isVisible", lambda: True)():
-                txt = default_edit.text()
-                default_val = txt if txt != "" else None
+            meta_full = " | ".join(meta_text)
+            meta_line = QLineEdit(meta_full)
+            meta_line.setReadOnly(True)
+            meta_line.setToolTip(meta_full)
+            meta_line.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            btn_edit = QPushButton("Изменить")
+            btn_delete = QPushButton("Удалить")
+            btn_edit.setFixedWidth(90)
+            btn_delete.setFixedWidth(90)
+            hl.addWidget(name_label)
+            hl.addWidget(meta_line)
+            hl.addWidget(btn_edit)
+            hl.addWidget(btn_delete)
+            self.columns_layout.addWidget(row)
+            if idx % 2 == 0:
+                row.setStyleSheet("QWidget { background: #ffffff; }")
             else:
-                default_val = None
+                row.setStyleSheet("QWidget { background: #fbfbfb; }")
+            if is_enum:
+                btn_edit.setEnabled(False)
+                btn_edit.setToolTip("Этот столбец ENUM — редактирование запрещено")
+                btn_delete.setEnabled(True)
+                btn_delete.setToolTip("Удаление разрешено")
+            self.column_rows.append((col, row))
+            cid = idx
+            btn_edit.clicked.connect(lambda _checked, c=col: self.handle_edit(c))
+            btn_delete.clicked.connect(lambda _checked, c=col: self.handle_delete(c))
+            idx += 1
 
-            check_val = check_edit.text() if check_edit and getattr(check_edit, "isVisible", lambda: True)() and check_edit.text() != "" else None
-
-            if length_spin is not None:
+    def build_data_from_table(self, table):
+        data = {}
+        idx = 0
+        uniques = []
+        try:
+            uniques = [i['column_names'][0] for i in self.db.insp.get_unique_constraints(table.name)]
+        except:
+            uniques = []
+        for col in table.columns:
+            try:
+                type_text = str(col.type)
+            except:
+                type_text = "TEXT"
+            array_elem = None
+            if "ARRAY" in type_text.upper():
                 try:
-                    length_val = int(length_spin.value())
-                except Exception:
-                    length_val = None
-            else:
+                    array_elem = str(col.type.item_type)
+                except:
+                    array_elem = None
+            length_val = None
+            try:
+                m = re.search(r'\(\s*(\d+)\s*\)', type_text)
+                if m:
+                    length_val = int(m.group(1))
+            except:
                 length_val = None
-
-
-            if array_elem_combo is not None and getattr(array_elem_combo, "isVisible", lambda: False)():
-                array_elem = array_elem_combo.currentText()
+            default_val = None
+            try:
+                if getattr(col, "server_default", None) is not None:
+                    default_val = str(col.server_default.arg)
+            except:
+                default_val = None
+            check_val = None
+            try:
+                check_constraints = [f"({check.sqltext})" for check in col.table.constraints if hasattr(check, 'sqltext') and col.name in str(check.sqltext)]
+                if check_constraints:
+                    check_val = check_constraints[0]
+            except:
+                check_val = None
+            fk_table = None
+            fk_column = None
+            try:
+                if hasattr(col, 'foreign_keys') and col.foreign_keys:
+                    for fk in col.foreign_keys:
+                        fk_table = fk.column.table.name
+                        fk_column = fk.column.name
+            except:
+                fk_table = None
+                fk_column = None
+            detected_type = "TEXT"
+            if "ARRAY" in type_text.upper():
+                detected_type = "ARRAY"
             else:
-                array_elem = None
-            return {
-                'name': name_edit.text(),
-                'type': type_combo.currentText(),
-                'not_null': not_null_check.isChecked() if not_null_check else False,
-                'unique': unique_check.isChecked() if unique_check else False,
-                'primary_key': pk_check.isChecked() if pk_check else False,
+                is_enum = False
+                if "ENUM" in type_text.upper():
+                    is_enum = True
+                else:
+                    try:
+                        if hasattr(col.type, 'enums') and getattr(col.type, 'enums') is not None:
+                            is_enum = True
+                    except:
+                        is_enum = False
+                if is_enum:
+                    detected_type = "ENUM"
+                elif "TEXT" in type_text.upper():
+                    detected_type = "TEXT"
+                elif "INT" in type_text.upper() or "INTEGER" in type_text.upper():
+                    detected_type = "INTEGER"
+                elif any(x in type_text.upper() for x in ["REAL","FLOAT","DOUBLE"]):
+                    detected_type = "REAL"
+                elif any(x in type_text.upper() for x in ["DATE","TIME"]):
+                    detected_type = "DATE"
+                elif any(x in type_text.upper() for x in ["BOOL","BOOLEAN"]):
+                    detected_type = "BOOLEAN"
+                else:
+                    detected_type = "TEXT"
+            data[idx] = {
+                'name': col.name,
+                'type': detected_type,
+                'not_null': not col.nullable,
+                'unique': col.name in uniques,
+                'primary_key': bool(getattr(col, 'primary_key', False)),
                 'default': default_val,
                 'check': check_val,
                 'length': length_val,
                 'array_elem_type': array_elem,
-                'fk_table': fk_edit.text() if fk_edit else None,
-                'fk_column': fk_column_edit.text() if fk_column_edit else None
+                'fk_table': fk_table,
+                'fk_column': fk_column
             }
-        return {}
+            idx += 1
+        return data
 
-    def remove_column_widget(self, widget):
-        column_id = getattr(widget, 'column_id', None)
-        if column_id is None:
-            for cid, w in list(self.column_widgets.items()):
-                if w is widget:
-                    column_id = cid
-                    break
-        try:
-            if column_id is not None and column_id in self.column_widgets:
-                del self.column_widgets[column_id]
-        except Exception:
-            pass
-        try:
-            self.columns_layout.removeWidget(widget)
-        except Exception:
-            pass
-            widget.deleteLater()
-
-
-    def gather_changes(self):
-        new_data = {}
-        self.new_table_name = self.table_name_edit.text()
-        for column_id, widget in self.column_widgets.items():
-            new_data[column_id] = self.get_column_data(widget)
-
-        return new_data
-
-    def on_apply(self):
-        new_data = self.gather_changes()
-        print(self.old_data )
-        print(new_data)
-        try:
-            self.db.alter_table(self.old_table_name, self.new_table_name, self.old_data, new_data)
-            QMessageBox.information(self, "Успешно", "Структура изменена")
-            self.tablesChanged.emit(getattr(self, "new_table_name", None))
-            if self.table_manager:
-                self.table_manager.handle_external_change(getattr(self, "new_table_name", None))
+    def handle_rename(self):
+        dlg = RenameTableDialog(self.table_name, self)
+        if dlg.exec() == QDialog.Accepted:
+            new_name = dlg.new_name()
+            if not new_name:
+                QMessageBox.warning(self, "Внимание", "Имя не может быть пустым")
+                return
+            old_data = self.build_data_from_table(self.table)
+            new_data = old_data.copy()
             try:
-                self.accept()
-            except Exception:
-                self.setParent(None)
-                self.deleteLater()
-        except Exception as e:
-            QMessageBox.critical(self, "Ошибка", str(e))
+                self.db.alter_table(self.table_name, new_name, old_data, new_data)
+                print(old_data, new_data)
+                QMessageBox.information(self, "Успешно", "Таблица переименована")
+                self.table_name = new_name
+                self.tablesChanged.emit(self.table_name)
+                if self.table_manager:
+                    self.table_manager.handle_external_change(self.table_name)
+                self.refresh_from_db()
+            except Exception as e:
+                QMessageBox.critical(self, "Ошибка", str(e))
+
+    def handle_add(self):
+        dlg = ColumnEditorDialog(parent=self)
+        if dlg.exec() == QDialog.Accepted:
+            col_data = dlg.get_data()
+            if not col_data.get('name'):
+                QMessageBox.warning(self, "Внимание", "Имя столбца не может быть пустым")
+                return
+            old_data = self.build_data_from_table(self.table)
+            new_data = {}
+            idx = 0
+            for v in old_data.values():
+                new_data[idx] = v
+                idx += 1
+            new_data[idx] = col_data
+            try:
+                self.db.alter_table(self.table_name, self.table_name, old_data, new_data)
+                print(old_data, new_data)
+                QMessageBox.information(self, "Успешно", "Столбец добавлен")
+                self.refresh_from_db()
+            except Exception as e:
+                QMessageBox.critical(self, "Ошибка", str(e))
+
+    def handle_edit(self, col):
+        cur_data = None
+        try:
+            tmp = self.build_data_from_table(self.table)
+            for v in tmp.values():
+                if v.get('name') == col.name:
+                    cur_data = v
+                    break
+        except:
+            cur_data = None
+        dlg = ColumnEditorDialog(column_data=cur_data or {}, parent=self)
+        if dlg.exec() == QDialog.Accepted:
+            new_col = dlg.get_data()
+            old_data = self.build_data_from_table(self.table)
+            new_data = {}
+            idx = 0
+            replaced = False
+            for k, v in old_data.items():
+                if v.get('name') == col.name and not replaced:
+                    new_data[idx] = new_col
+                    replaced = True
+                else:
+                    new_data[idx] = v
+                idx += 1
+            try:
+                self.db.alter_table(self.table_name, self.table_name, old_data, new_data)
+                print(old_data, new_data)
+                QMessageBox.information(self, "Успешно", "Столбец изменен")
+                self.refresh_from_db()
+            except Exception as e:
+                QMessageBox.critical(self, "Ошибка", str(e))
+
+    def handle_delete(self, col):
+        dlg = ConfirmDialog(f"Удалить столбец '{col.name}'?", self)
+        if dlg.exec() == QDialog.Accepted:
+            old_data = self.build_data_from_table(self.table)
+            new_data = {}
+            idx = 0
+            for v in old_data.values():
+                if v.get('name') == col.name:
+                    continue
+                new_data[idx] = v
+                idx += 1
+            try:
+                self.db.alter_table(self.table_name, self.table_name, old_data, new_data)
+                QMessageBox.information(self, "Успешно", "Столбец удален")
+                self.refresh_from_db()
+            except Exception as e:
+                QMessageBox.critical(self, "Ошибка", str(e))

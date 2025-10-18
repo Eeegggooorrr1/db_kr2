@@ -1,5 +1,7 @@
 from typing import Any, Dict, Optional, List, Type
 from abc import ABC, abstractmethod
+
+from PySide6.QtWidgets import QMessageBox
 from sqlalchemy import Column, Table, Integer, String, Boolean, Enum as SAEnum, Float, Date, DateTime, Numeric, ARRAY, CheckConstraint
 from datetime import datetime, date
 import re
@@ -432,7 +434,8 @@ class TableValidator:
             except Exception:
                 for colname in referenced:
                     if colname not in errors:
-                        errors[colname] = "Невозможно проверить ограничение CHECK"
+                        QMessageBox.critical("Ошибка", f"не удалось проверить check")
+                        #errors[colname] = "Невозможно проверить ограничение CHECK"
 
         return validated, errors
 

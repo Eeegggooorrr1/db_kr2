@@ -21,7 +21,7 @@ def qualified_from_tuple(col: Tuple[str, str]) -> str:
 
 
 class ConditionDialog(QDialog):
-    def __init__(self, columns: List[Tuple[str, str]], parent=None, title='Add condition'):
+    def __init__(self, columns: List[Tuple[str, str]], parent=None, title='Добавить условие'):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.columns = columns or []
@@ -34,32 +34,12 @@ class ConditionDialog(QDialog):
         self.op_cb = QComboBox()
         self.op_cb.addItems(['=', '!=', '<', '<=', '>', '>='] + TEXT_OPS)
         self.val_le = QLineEdit()
-        add_btn = QPushButton('add')
+        add_btn = QPushButton('Добавить')
         add_btn.clicked.connect(self.accept)
-        layout.addRow('Column', self.wrap_with_clear(self.col_cb))
-        layout.addRow('Operator', self.wrap_with_clear(self.op_cb))
-        layout.addRow('Value', self.wrap_with_clear(self.val_le))
+        layout.addRow('Столбец', self.col_cb)
+        layout.addRow('Оператор', self.op_cb)
+        layout.addRow('Значение', self.val_le)
         layout.addRow(add_btn)
-
-    def wrap_with_clear(self, widget):
-        w = QWidget()
-        l = QHBoxLayout(w)
-        l.setContentsMargins(0, 0, 0, 0)
-        l.addWidget(widget)
-        clr = QPushButton('Clear')
-
-        def do_clear():
-            if isinstance(widget, QComboBox):
-                if widget.count():
-                    widget.setCurrentIndex(0)
-            elif isinstance(widget, QLineEdit):
-                widget.clear()
-            elif isinstance(widget, QSpinBox):
-                widget.setValue(0)
-
-        clr.clicked.connect(do_clear)
-        l.addWidget(clr)
-        return w
 
     def get_condition(self) -> str:
         val = self.val_le.text().replace("'", "''")
@@ -73,7 +53,7 @@ class ConditionDialog(QDialog):
 class JoinDialog(QDialog):
     def __init__(self, schema: Dict[str, List[str]], parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Add join")
+        self.setWindowTitle("Добавить соединение")
         self.schema = schema or {}
         self.setup_ui()
 
@@ -90,13 +70,13 @@ class JoinDialog(QDialog):
         self.right_table_cb.currentIndexChanged.connect(self.update_fields)
         self.join_type_cb = QComboBox()
         self.join_type_cb.addItems(['INNER', 'LEFT', 'RIGHT', 'FULL'])
-        add_btn = QPushButton('add')
+        add_btn = QPushButton('Добавить')
         add_btn.clicked.connect(self.accept)
-        layout.addRow('Left table', self.wrap_with_clear(self.left_table_cb))
-        layout.addRow('Right table', self.wrap_with_clear(self.right_table_cb))
-        layout.addRow('Left field', self.wrap_with_clear(self.left_field_cb))
-        layout.addRow('Right field', self.wrap_with_clear(self.right_field_cb))
-        layout.addRow('Type', self.wrap_with_clear(self.join_type_cb))
+        layout.addRow('Левая таблица', self.left_table_cb)
+        layout.addRow('Правая таблица', self.right_table_cb)
+        layout.addRow('Поле (слева)', self.left_field_cb)
+        layout.addRow('Поле (справа)', self.right_field_cb)
+        layout.addRow('Тип', self.join_type_cb)
         layout.addRow(add_btn)
 
     def update_fields(self):
@@ -108,24 +88,6 @@ class JoinDialog(QDialog):
             self.left_field_cb.addItems(self.schema.get(lt, []))
         if rt and rt in self.schema:
             self.right_field_cb.addItems(self.schema.get(rt, []))
-
-    def wrap_with_clear(self, widget):
-        w = QWidget()
-        l = QHBoxLayout(w)
-        l.setContentsMargins(0, 0, 0, 0)
-        l.addWidget(widget)
-        clr = QPushButton('Clear')
-
-        def do_clear():
-            if isinstance(widget, QComboBox):
-                if widget.count():
-                    widget.setCurrentIndex(0)
-            elif isinstance(widget, QLineEdit):
-                widget.clear()
-
-        clr.clicked.connect(do_clear)
-        l.addWidget(clr)
-        return w
 
     def get_join(self):
         left = self.left_table_cb.currentText()
@@ -149,7 +111,6 @@ class SQLStubWindow(QWidget):
 
     def __init__(self, db=None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle('SQL UI Stub — Просмотр')
         self.db = db
         self.selected_columns = []
         self.where_conditions = []
@@ -163,7 +124,7 @@ class SQLStubWindow(QWidget):
         self.schema = {}
         self._load_schema_from_db()
         self.setup_ui()
-        self.apply_styles()
+        #self.apply_styles()
         self.update_sql_preview()
 
     def _load_schema_from_db(self):
@@ -196,7 +157,7 @@ class SQLStubWindow(QWidget):
         main_layout.setContentsMargins(12, 12, 12, 12)
         main_layout.setSpacing(12)
 
-        sel_group = QGroupBox('')
+        sel_group = QGroupBox('Выбор столбцов')
         sel_layout = QVBoxLayout()
 
         for table in sorted(self.schema.keys()):
@@ -238,14 +199,14 @@ class SQLStubWindow(QWidget):
         sel_group.setLayout(sel_layout)
         main_layout.addWidget(sel_group)
 
-        join_group = QGroupBox('Join')
+        join_group = QGroupBox('Соединения')
         jlayout = QVBoxLayout()
         self.join_list = QListWidget()
         jlayout.addWidget(self.join_list)
         jbtn_row = QHBoxLayout()
-        add_join_btn = QPushButton('add')
+        add_join_btn = QPushButton('Добавить')
         add_join_btn.clicked.connect(self.open_add_join_dialog)
-        clear_join_btn = QPushButton('Clear')
+        clear_join_btn = QPushButton('Очистить')
         clear_join_btn.clicked.connect(self.clear_join)
         jbtn_row.addWidget(add_join_btn)
         jbtn_row.addWidget(clear_join_btn)
@@ -254,14 +215,14 @@ class SQLStubWindow(QWidget):
         join_group.setLayout(jlayout)
         main_layout.addWidget(join_group)
 
-        where_group = QGroupBox('Where')
+        where_group = QGroupBox('WHERE')
         wlayout = QVBoxLayout()
         self.where_list = QListWidget()
         wlayout.addWidget(self.where_list)
         wbtn_row = QHBoxLayout()
-        add_where_btn = QPushButton('add')
+        add_where_btn = QPushButton('Добавить')
         add_where_btn.clicked.connect(self.add_where_condition)
-        clear_where_btn = QPushButton('Clear')
+        clear_where_btn = QPushButton('Очистить')
         clear_where_btn.clicked.connect(self.clear_where)
         wbtn_row.addWidget(add_where_btn)
         wbtn_row.addWidget(clear_where_btn)
@@ -270,17 +231,17 @@ class SQLStubWindow(QWidget):
         where_group.setLayout(wlayout)
         main_layout.addWidget(where_group)
 
-        group_group = QGroupBox('Group By')
+        group_group = QGroupBox('GROUP BY')
         glayout = QVBoxLayout()
         self.group_list = QListWidget()
         glayout.addWidget(self.group_list)
         gbtn_row = QHBoxLayout()
-        add_group_btn = QPushButton('add')
+        add_group_btn = QPushButton('group')
         add_group_btn.clicked.connect(self.add_group_by)
-        clear_group_btn = QPushButton('Clear')
-        clear_group_btn.clicked.connect(self.clear_group_by)
-        add_agg_btn = QPushButton('add')
+        add_agg_btn = QPushButton('агрегат')
         add_agg_btn.clicked.connect(self.add_aggregate)
+        clear_group_btn = QPushButton('Очистить')
+        clear_group_btn.clicked.connect(self.clear_group_by)
         gbtn_row.addWidget(add_group_btn)
         gbtn_row.addWidget(add_agg_btn)
         gbtn_row.addWidget(clear_group_btn)
@@ -289,14 +250,14 @@ class SQLStubWindow(QWidget):
         group_group.setLayout(glayout)
         main_layout.addWidget(group_group)
 
-        having_group = QGroupBox('Having')
+        having_group = QGroupBox('HAVING')
         hlay = QVBoxLayout()
         self.having_list = QListWidget()
         hlay.addWidget(self.having_list)
         hbtn_row = QHBoxLayout()
-        add_having_btn = QPushButton('add')
+        add_having_btn = QPushButton('Добавить')
         add_having_btn.clicked.connect(self.add_having)
-        clear_having_btn = QPushButton('Clear')
+        clear_having_btn = QPushButton('Очистить')
         clear_having_btn.clicked.connect(self.clear_having)
         hbtn_row.addWidget(add_having_btn)
         hbtn_row.addWidget(clear_having_btn)
@@ -305,14 +266,14 @@ class SQLStubWindow(QWidget):
         having_group.setLayout(hlay)
         main_layout.addWidget(having_group)
 
-        order_group = QGroupBox('Order By')
+        order_group = QGroupBox('ORDER BY')
         ol = QVBoxLayout()
         self.order_list = QListWidget()
         ol.addWidget(self.order_list)
         obtn_row = QHBoxLayout()
-        add_order_btn = QPushButton('add')
+        add_order_btn = QPushButton('Добавить')
         add_order_btn.clicked.connect(self.add_order_by)
-        clear_order_btn = QPushButton('Clear')
+        clear_order_btn = QPushButton('Очистить')
         clear_order_btn.clicked.connect(self.clear_order_by)
         obtn_row.addWidget(add_order_btn)
         obtn_row.addWidget(clear_order_btn)
@@ -321,13 +282,13 @@ class SQLStubWindow(QWidget):
         order_group.setLayout(ol)
         main_layout.addWidget(order_group)
 
-        preview_group = QGroupBox('SQL preview')
+        preview_group = QGroupBox('запрос')
         pl = QVBoxLayout()
         self.sql_preview = QTextEdit()
         self.sql_preview.setReadOnly(True)
         pl.addWidget(self.sql_preview)
         btns = QHBoxLayout()
-        apply_btn = QPushButton('apply')
+        apply_btn = QPushButton('Применить')
         apply_btn.clicked.connect(self.on_apply_clicked)
         btns.addWidget(apply_btn)
         btns.addStretch()
@@ -368,10 +329,10 @@ class SQLStubWindow(QWidget):
             if j['left'] and j['right'] and j['lf'] and j['rf']:
                 self.joins.append(j)
                 self.join_list.addItem(j['desc'])
-                QMessageBox.information(self, 'Join added', f"Added: {j['desc']}")
+                QMessageBox.information(self, 'Соединение добавлено', f"Добавлено: {j['desc']}")
                 self.update_sql_preview()
             else:
-                QMessageBox.warning(self, 'Join not added', 'Please select tables and fields for the join.')
+                QMessageBox.warning(self, 'Соединение не добавлено', 'Выберите таблицы и поля для соединения.')
 
     def remove_selected_join(self):
         row = self.join_list.currentRow()
@@ -385,7 +346,7 @@ class SQLStubWindow(QWidget):
 
     def add_where_condition(self):
         cols = [(t, c) for t in self.schema for c in self.schema[t]]
-        dlg = ConditionDialog(cols, self, title='Add WHERE condition')
+        dlg = ConditionDialog(cols, self, title='Добавить WHERE-условие')
         if dlg.exec():
             cond = dlg.get_condition()
             self.where_conditions.append(cond)
@@ -409,13 +370,13 @@ class SQLStubWindow(QWidget):
 
     def add_group_by(self):
         dlg = QDialog(self)
-        dlg.setWindowTitle('Add GROUP BY column')
+        dlg.setWindowTitle('Добавить столбец в GROUP BY')
         layout = QFormLayout(dlg)
         cb = QComboBox()
         cb.addItems([f"{t}.{c}" for t in self.schema for c in self.schema[t]])
-        add_btn = QPushButton('add')
+        add_btn = QPushButton('Добавить')
         add_btn.clicked.connect(dlg.accept)
-        layout.addRow(self.wrap_with_clear(cb))
+        layout.addRow(cb)
         layout.addRow(add_btn)
         if dlg.exec():
             val = cb.currentText()
@@ -437,22 +398,23 @@ class SQLStubWindow(QWidget):
     def clear_group_by(self):
         self.group_list.clear()
         self.group_by.clear()
+        self.aggregates.clear()
         self.update_sql_preview()
 
     def add_aggregate(self):
         dlg = QDialog(self)
-        dlg.setWindowTitle('Add aggregate')
+        dlg.setWindowTitle('Добавить агрегат')
         layout = QFormLayout(dlg)
         col_cb = QComboBox()
         col_cb.addItems([f"{t}.{c}" for t in self.schema for c in self.schema[t]])
         agg_cb = QComboBox()
         agg_cb.addItems(AGG_FUNCS)
         alias_le = QLineEdit()
-        add_btn = QPushButton('add')
+        add_btn = QPushButton('Добавить')
         add_btn.clicked.connect(dlg.accept)
-        layout.addRow('Column', self.wrap_with_clear(col_cb))
-        layout.addRow('Function', self.wrap_with_clear(agg_cb))
-        layout.addRow('Alias', self.wrap_with_clear(alias_le))
+        layout.addRow('Столбец', col_cb)
+        layout.addRow('Функция', agg_cb)
+        layout.addRow('Псевдоним', alias_le)
         layout.addRow(add_btn)
         if dlg.exec():
             fn = agg_cb.currentText()
@@ -465,10 +427,10 @@ class SQLStubWindow(QWidget):
 
     def add_having(self):
         if not self.group_by and not self.aggregates:
-            QMessageBox.warning(self, 'HAVING not available', 'You must add GROUP BY or an aggregate before using HAVING.')
+            QMessageBox.warning(self, 'HAVING недоступно', 'Нужно добавить GROUP BY или агрегат перед использованием HAVING.')
             return
         cols = [(t, c) for t in self.schema for c in self.schema[t]]
-        dlg = ConditionDialog(cols, self, title='Add HAVING condition')
+        dlg = ConditionDialog(cols, self, title='Добавить HAVING-условие')
         if dlg.exec():
             cond = dlg.get_condition()
             self.having_conditions.append(cond)
@@ -492,16 +454,16 @@ class SQLStubWindow(QWidget):
 
     def add_order_by(self):
         dlg = QDialog(self)
-        dlg.setWindowTitle('Add ORDER BY')
+        dlg.setWindowTitle('Добавить ORDER BY')
         layout = QFormLayout(dlg)
         col_cb = QComboBox()
         col_cb.addItems([f"{t}.{c}" for t in self.schema for c in self.schema[t]])
         dir_cb = QComboBox()
         dir_cb.addItems(['ASC', 'DESC'])
-        add_btn = QPushButton('add')
+        add_btn = QPushButton('Добавить')
         add_btn.clicked.connect(dlg.accept)
-        layout.addRow('Column', self.wrap_with_clear(col_cb))
-        layout.addRow('Direction', self.wrap_with_clear(dir_cb))
+        layout.addRow('Столбец', col_cb)
+        layout.addRow('Направление', dir_cb)
         layout.addRow(add_btn)
         if dlg.exec():
             entry = f"{col_cb.currentText()} {dir_cb.currentText()}"
@@ -530,7 +492,7 @@ class SQLStubWindow(QWidget):
         l = QHBoxLayout(w)
         l.setContentsMargins(0, 0, 0, 0)
         l.addWidget(widget)
-        clr = QPushButton('Clear')
+        clr = QPushButton('Очистить')
 
         def do_clear():
             if isinstance(widget, QComboBox):
@@ -603,7 +565,7 @@ class SQLStubWindow(QWidget):
             pass
         sql = self.sql_preview.toPlainText().strip()
         if not sql:
-            QMessageBox.warning(self, "Empty SQL", "SQL is empty — nothing to apply.")
+            QMessageBox.warning(self, "Пустой SQL", "SQL пустой — нечего применять.")
             return
         self.apply_sql.emit(sql)
 
