@@ -247,6 +247,8 @@ class Database:
             base = f'ALTER TABLE "{table}" ALTER COLUMN "{column}" TYPE {new_type}'
             if using_expr:
                 base += f' USING {using_expr}'
+            else:
+                base += f' USING "{column}"::{new_type}'
             return base
 
         def _alter_column_set_not_null(table, column):
@@ -526,7 +528,6 @@ class Database:
                         raise
                 except Exception:
                     raise
-
             try:
                 self.metadata.clear()
                 self.insp = inspect(self.engine)
