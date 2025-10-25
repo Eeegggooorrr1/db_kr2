@@ -10,17 +10,6 @@ from sqlalchemy.engine import Engine
 from config import settings
 
 
-class UniqueConstraintViolation(Exception):
-    pass
-
-
-def log_returns(func):
-    def wrapper(*args, **kwargs):
-        result = func(*args, **kwargs)
-        print(f"[RETURN] {func.__name__} -> {result}")
-        return result
-    return wrapper
-
 class Database:
 
     def __init__(self, params: dict = None):
@@ -35,6 +24,70 @@ class Database:
         self.SessionLocal = sessionmaker(bind=self.engine, autoflush=False, autocommit=False, future=True)
         self.metadata = MetaData()
         self.insp = inspect(self.engine)
+
+    def reset(self):
+        with self.engine.begin() as conn:
+            conn.execute(text("""
+                DROP SCHEMA public CASCADE;
+                CREATE SCHEMA public;
+                CREATE TYPE attack_type_enum AS ENUM ('no_attack','blur','noise','adversarial','other');
+                CREATE TABLE experiments (
+                    experiment_id SERIAL PRIMARY KEY,
+                    name VARCHAR(255) NOT NULL,
+                    description TEXT,
+                    created_date DATE DEFAULT current_date
+                );
+                CREATE TABLE runs (
+                    run_id SERIAL PRIMARY KEY,
+                    experiment_id INTEGER NOT NULL,
+                    run_date TIMESTAMP DEFAULT now(),
+                    accuracy DOUBLE PRECISION,
+                    flagged BOOLEAN,
+                    CONSTRAINT fk_runs_experiment_id FOREIGN KEY (experiment_id) REFERENCES experiments(experiment_id) ON DELETE CASCADE
+                );
+                CREATE TABLE images (
+                    image_id SERIAL PRIMARY KEY,
+                    run_id INTEGER NOT NULL,
+                    file_path VARCHAR(500) NOT NULL,
+                    original_name VARCHAR(255),
+                    attack_type attack_type_enum NOT NULL,
+                    added_date TIMESTAMP DEFAULT date_trunc('second', now()::timestamp),
+                    coordinates INTEGER[],
+                    CONSTRAINT fk_images_run_id FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
+                );
+                CREATE TABLE test (id SERIAL PRIMARY KEY);
+                INSERT INTO experiments (name, description) VALUES
+                ('Baseline Classification', 'Standard image classification without attacks'),
+                ('Adversarial Robustness', 'Testing model resilience against adversarial attacks'),
+                ('Noise Sensitivity', 'Evaluating performance under different noise conditions'),
+                ('Blur Tolerance', 'Testing model accuracy with various blur levels'),
+                ('Mixed Attacks', 'Combination of different attack types');
+                INSERT INTO runs (experiment_id, run_date, accuracy, flagged)
+                SELECT
+                    (seq.run_id % 5) + 1 as experiment_id,
+                    now() - interval '1 day' * random() * 30 as run_date,
+                    round(random()::numeric * 0.4 + 0.6, 4) as accuracy,
+                    random() > 0.9 as flagged
+                FROM generate_series(1, 20) as seq(run_id);
+                INSERT INTO images (run_id, file_path, original_name, attack_type, added_date, coordinates)
+                SELECT
+                    (seq.image_id % 20) + 1 as run_id,
+                    '/data/images/' || seq.image_id || '.png' as file_path,
+                    'original_' || seq.image_id || '.jpg' as original_name,
+                    CASE floor(random() * 5)
+                        WHEN 0 THEN 'no_attack'::attack_type_enum
+                        WHEN 1 THEN 'blur'::attack_type_enum
+                        WHEN 2 THEN 'noise'::attack_type_enum
+                        WHEN 3 THEN 'adversarial'::attack_type_enum
+                        ELSE 'other'::attack_type_enum
+                    END as attack_type,
+                    now() - interval '1 hour' * random() * 24 * 30 as added_date,
+                    CASE
+                        WHEN random() > 0.3 THEN ARRAY[floor(random()*1000), floor(random()*1000)]
+                        ELSE NULL
+                    END as coordinates
+                FROM generate_series(1, 100) as seq(image_id);
+            """))
 
     def _build_url(self, params: dict) -> str:
         user = params.get("DB_USER") or params.get("user") or ""
@@ -117,7 +170,7 @@ class Database:
         session = self.SessionLocal()
         try:
             for col in table.columns:
-                if col.unique:
+                if getattr(col, "_inspector_unique", False) or getattr(col, "unique", False):
                     val = data.get(col.name)
                     if val is None:
                         continue
@@ -151,15 +204,12 @@ class Database:
             return False
 
     def alter_table(self, old_table_name, new_table_name, old_data, new_data):
-        @log_returns
         def _change_name(old_table_name, new_table_name):
             return f'ALTER TABLE "{old_table_name}" RENAME TO "{new_table_name}"'
 
-        @log_returns
         def _drop_column(table, column):
             return f'ALTER TABLE "{table}" DROP COLUMN "{column}"'
 
-        @log_returns
         def _create_column(table, column):
             sql = f'ALTER TABLE "{table}" ADD COLUMN "{column["name"]}"'
             if column['type'] == 'TEXT':
@@ -190,68 +240,54 @@ class Database:
                 sql += f' CONSTRAINT "{cname}" REFERENCES "{fk_table}"("{fk_column}")'
             return sql
 
-        @log_returns
         def _rename_column(table, old_name, new_name):
             return f'ALTER TABLE "{table}" RENAME COLUMN "{old_name}" TO "{new_name}"'
 
-        @log_returns
         def _alter_column_type(table, column, new_type, using_expr=None):
             base = f'ALTER TABLE "{table}" ALTER COLUMN "{column}" TYPE {new_type}'
             if using_expr:
                 base += f' USING {using_expr}'
             return base
 
-        @log_returns
         def _alter_column_set_not_null(table, column):
             return f'ALTER TABLE "{table}" ALTER COLUMN "{column}" SET NOT NULL'
 
-        @log_returns
         def _alter_column_drop_not_null(table, column):
             return f'ALTER TABLE "{table}" ALTER COLUMN "{column}" DROP NOT NULL'
 
-        @log_returns
         def _alter_column_set_default(table, column, default):
             return f'ALTER TABLE "{table}" ALTER COLUMN "{column}" SET DEFAULT {default}'
 
-        @log_returns
         def _alter_column_drop_default(table, column):
             return f'ALTER TABLE "{table}" ALTER COLUMN "{column}" DROP DEFAULT'
 
-        @log_returns
         def _add_check_constraint(table, column, check):
             constraint_name = f'chk_{table}_{column}'
             return f'ALTER TABLE "{table}" ADD CONSTRAINT "{constraint_name}" CHECK ({check})'
 
-        @log_returns
         def _drop_check_constraint(table, column):
             constraint_name = f'chk_{table}_{column}'
             return f'ALTER TABLE "{table}" DROP CONSTRAINT IF EXISTS "{constraint_name}"'
 
-        @log_returns
         def _add_foreign_key(table, column, fk_table, fk_column):
             constraint_name = f'fk_{table}_{column}'
             return f'ALTER TABLE "{table}" ADD CONSTRAINT "{constraint_name}" FOREIGN KEY ("{column}") REFERENCES "{fk_table}"("{fk_column}")'
 
-        @log_returns
         def _drop_foreign_key(table, column):
             constraint_name = f'fk_{table}_{column}'
             return f'ALTER TABLE "{table}" DROP CONSTRAINT IF EXISTS "{constraint_name}"'
 
-        @log_returns
         def _add_unique(table, column):
             constraint_name = f'uniq_{table}_{column}'
             return f'ALTER TABLE "{table}" ADD CONSTRAINT "{constraint_name}" UNIQUE ("{column}")'
 
-        @log_returns
         def _drop_unique(table, column):
             constraint_name = f'uniq_{table}_{column}'
             return f'ALTER TABLE "{table}" DROP CONSTRAINT IF EXISTS "{constraint_name}"'
 
-        @log_returns
         def _add_pk(table, column, constraint_name):
             return f'ALTER TABLE "{table}" ADD CONSTRAINT "{constraint_name}" PRIMARY KEY ("{column}")'
 
-        @log_returns
         def _drop_constraint(table, constraint_name):
             return f'ALTER TABLE "{table}" DROP CONSTRAINT IF EXISTS "{constraint_name}"'
 

@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QStandardItemModel, QStandardItem, QIntValidator, QDoubleValidator
 from PySide6.QtCore import Qt, Signal
 
-from sqlalchemy import text, select, update, and_
+from sqlalchemy import text, select, update, and_, delete
 from sqlalchemy import Table as SATable
 from sqlalchemy.types import Enum as SAEnum, Boolean, Integer, Float, Date, DateTime, ARRAY, JSON
 
@@ -397,14 +397,17 @@ class EditDialog(QDialog):
                     pass
         self.layout.addLayout(self.form_layout)
         btn_row = QHBoxLayout()
-        self.btn_submit = QPushButton("Save")
-        self.btn_cancel = QPushButton("Cancel")
+        self.btn_submit = QPushButton("Сохранить")
+        self.btn_cancel = QPushButton("Отмена")
+        self.btn_delete = QPushButton("Удалить")
         btn_row.addStretch(1)
         btn_row.addWidget(self.btn_cancel)
+        btn_row.addWidget(self.btn_delete)
         btn_row.addWidget(self.btn_submit)
         self.layout.addLayout(btn_row)
         self.btn_submit.clicked.connect(self.on_submit)
         self.btn_cancel.clicked.connect(self.reject)
+        self.btn_delete.clicked.connect(self.on_delete)
         self._load_row_and_prefill()
 
     def _load_row_and_prefill(self):
@@ -412,7 +415,7 @@ class EditDialog(QDialog):
         for pk_col in self.table.primary_key.columns:
             name = pk_col.name
             if name not in self.pk_dict:
-                QMessageBox.warning(self, "PK missing", f"Primary key value for '{name}' not provided.")
+                QMessageBox.warning(self, "pk отсутствует", f"Pk для '{name}' отсутствует.")
                 return
             val = self.pk_dict[name]
             conds.append(self.table.c[name] == val)
@@ -458,13 +461,13 @@ class EditDialog(QDialog):
             return
         update_data = {k: v for k, v in validated.items() if k not in [c.name for c in self.table.primary_key.columns]}
         if not update_data:
-            QMessageBox.information(self, "No changes", "No updatable fields provided.")
+            QMessageBox.information(self, "нету изменений", "ни одного поля не изменено.")
             return
         conds = []
         for pk_col in self.table.primary_key.columns:
             name = pk_col.name
             if name not in self.pk_dict:
-                QMessageBox.critical(self, "Missing PK", f"Primary key '{name}' value missing.")
+                QMessageBox.critical(self, "pk отсутствует", f"Pk для '{name}' отсутствует.")
                 return
             conds.append(self.table.c[name] == self.pk_dict[name])
         session = self.db.SessionLocal()
@@ -472,7 +475,7 @@ class EditDialog(QDialog):
             stmt = update(self.table).where(and_(*conds)).values(**update_data)
             session.execute(stmt)
             session.commit()
-            QMessageBox.information(self, "Ok", "Row updated")
+            QMessageBox.information(self, "Ok", "обновлено")
             try:
                 self.tablesChanged.emit(self.table.name)
             except Exception:
@@ -480,6 +483,34 @@ class EditDialog(QDialog):
             self.accept()
         except Exception as e:
             session.rollback()
-            QMessageBox.critical(self, "Update error", str(e))
+            QMessageBox.critical(self, "ошибка", str(e))
+        finally:
+            session.close()
+
+    def on_delete(self):
+        conds = []
+        for pk_col in self.table.primary_key.columns:
+            name = pk_col.name
+            if name not in self.pk_dict:
+                QMessageBox.critical(self, "pk отсутствует", f"Pk для '{name}' отсутствует.")
+                return
+            conds.append(self.table.c[name] == self.pk_dict[name])
+        reply = QMessageBox.question(self, "Удаление", "Вы уверены, что хотите удалить запись?", QMessageBox.Yes | QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+        session = self.db.SessionLocal()
+        try:
+            stmt = delete(self.table).where(and_(*conds))
+            session.execute(stmt)
+            session.commit()
+            QMessageBox.information(self, "Ok", "Удалено")
+            try:
+                self.tablesChanged.emit(self.table.name)
+            except Exception:
+                pass
+            self.accept()
+        except Exception as e:
+            session.rollback()
+            QMessageBox.critical(self, "ошибка удаления", str(e))
         finally:
             session.close()

@@ -7,25 +7,31 @@ from datetime import datetime, date
 import re
 import ast
 import operator
+import logging
 
-class ValidationError(Exception):
-    pass
+logger = logging.getLogger("table_validator")
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+logger.setLevel(logging.DEBUG)
 
 class FieldHandler(ABC):
     @abstractmethod
-    def supports(self, column: Column) -> bool:
+    def supports(self, column: Column):
         ...
 
     @abstractmethod
-    def parse(self, raw: Any, column: Column) -> Any:
+    def parse(self, raw: Any, column: Column):
         ...
 
     @abstractmethod
-    def validate(self, value: Any, column: Column) -> Optional[str]:
+    def validate(self, value: Any, column: Column):
         ...
 
 class IntHandler(FieldHandler):
-    def supports(self, column: Column) -> bool:
+    def supports(self, column: Column):
         return isinstance(column.type, Integer)
 
     def parse(self, raw, column):
@@ -38,6 +44,7 @@ class IntHandler(FieldHandler):
         try:
             return int(raw)
         except Exception as e:
+            logger.exception("IntHandler.parse failed for raw=%r column=%r", raw, getattr(column, "name", None))
             raise ValueError("Ожидается целое число") from e
 
     def validate(self, value, column):
@@ -59,6 +66,7 @@ class FloatHandler(FieldHandler):
         try:
             return float(raw)
         except Exception as e:
+            logger.exception("FloatHandler.parse failed for raw=%r column=%r", raw, getattr(column, "name", None))
             raise ValueError("Ожидается число с плавающей точкой") from e
 
     def validate(self, value, column):
@@ -83,6 +91,7 @@ class BoolHandler(FieldHandler):
                 return False
             if v == "":
                 return None
+        logger.exception("BoolHandler.parse failed for raw=%r column=%r", raw, getattr(column, "name", None))
         raise ValueError("Ожидается логическое значение")
 
     def validate(self, value, column):
@@ -103,6 +112,7 @@ class EnumHandler(FieldHandler):
         if enums and raw is not None:
             if raw in enums:
                 return raw
+            logger.debug("EnumHandler.parse invalid value %r allowed=%r column=%r", raw, enums, getattr(column, "name", None))
             raise ValueError(f"Ожидается одно из: {', '.join(map(str, enums))}")
         return raw
 
@@ -137,6 +147,7 @@ class DateHandler(FieldHandler):
                         return datetime.strptime(txt, fmt).date()
                     except Exception:
                         pass
+        logger.exception("DateHandler.parse failed for raw=%r column=%r", raw, getattr(column, "name", None))
         raise ValueError("Ожидается дата")
 
     def validate(self, value, column):
@@ -165,6 +176,7 @@ class DateTimeHandler(FieldHandler):
                         return datetime.strptime(txt, fmt)
                     except Exception:
                         pass
+        logger.exception("DateTimeHandler.parse failed for raw=%r column=%r", raw, getattr(column, "name", None))
         raise ValueError("Ожидается дата и время")
 
     def validate(self, value, column):
@@ -192,6 +204,7 @@ class StrHandler(FieldHandler):
             if maxlen and isinstance(value, str) and len(value) > maxlen:
                 return f"Максимальная длина {maxlen} символов"
         except Exception:
+            logger.exception("StrHandler.validate failed for value=%r column=%r", value, getattr(column, "name", None))
             pass
         return None
 
@@ -227,6 +240,7 @@ class ArrayHandler(FieldHandler):
                     txt = txt[1:-1]
                 items = [p.strip() for p in re.split(r'\s*,\s*', txt) if p.strip() != ""]
             else:
+                logger.exception("ArrayHandler.parse cannot parse raw type %r for column=%r", type(raw), getattr(column, "name", None))
                 raise ValueError("Невозможно распознать массив")
         handler = None
         if item_type is not None:
@@ -240,6 +254,7 @@ class ArrayHandler(FieldHandler):
                     parsed = it
                 parsed_items.append(parsed)
             except ValueError as e:
+                logger.exception("ArrayHandler.parse element %s failed for column=%r: %s", idx, getattr(column, "name", None), e)
                 raise ValueError(f"Элемент {idx}: {e}") from e
         return parsed_items
 
@@ -272,21 +287,27 @@ class TableValidator:
 
     def __init__(self, handlers = None):
         self.handlers = handlers or list(_DEFAULT_HANDLERS)
+        logger.debug("TableValidator initialized with handlers: %s", [type(h).__name__ for h in self.handlers])
 
     def register_handler(self, handler):
         self.handlers.insert(0, handler)
+        logger.debug("Registered handler: %s", type(handler).__name__)
 
     def _find_handler(self, column):
         for h in self.handlers:
             try:
                 if h.supports(column):
+                    logger.debug("Handler %s supports column %s", type(h).__name__, getattr(column, "name", None))
                     return h
-            except Exception:
+            except Exception as e:
+                logger.exception("_find_handler: handler %s raised exception for column %r: %s", type(h).__name__, getattr(column, "name", None), e)
                 continue
+        logger.debug("_find_handler: no handler found for column %r", getattr(column, "name", None))
         return None
 
     def _sql_to_python_expr(self, sql_text: str, validated: Dict[str, Any], table: Table):
         txt = str(sql_text)
+        logger.debug("_sql_to_python_expr input: %s", txt)
         txt = re.sub(r'<>', '!=', txt, flags=re.IGNORECASE)
         txt = re.sub(r'(?<![<>!])=(?!=)', '==', txt)
         txt = re.sub(r'\bAND\b', 'and', txt, flags=re.IGNORECASE)
@@ -295,10 +316,18 @@ class TableValidator:
         for col in table.columns:
             pattern = r'\b' + re.escape(col.name) + r'\b'
             val = validated.get(col.name)
-            txt = re.sub(pattern, repr(val), txt)
+            try:
+                repl = repr(val)
+            except Exception as e:
+                logger.exception("Failed to repr value for column %s: %s", col.name, e)
+                repl = "None"
+            txt = re.sub(pattern, repl, txt)
+            logger.debug("_sql_to_python_expr replaced %s with %s", col.name, repl)
+        logger.debug("_sql_to_python_expr output: %s", txt)
         return txt
 
     def _safe_eval(self, expr: str):
+        logger.debug("_safe_eval evaluating expr: %s", expr)
         node = ast.parse(expr, mode='eval')
         ops = {
             ast.Add: operator.add,
@@ -356,25 +385,36 @@ class TableValidator:
                 return [_eval(e) for e in n.elts]
             if isinstance(n, ast.Tuple):
                 return tuple(_eval(e) for e in n.elts)
+            logger.exception("_safe_eval encountered unsupported AST node: %r", type(n))
             raise ValueError("Недопустимое выражение в check")
-        return _eval(node)
+        try:
+            result = _eval(node)
+            logger.debug("_safe_eval result: %r", result)
+            return result
+        except Exception as e:
+            logger.exception("_safe_eval failed for expr %r: %s", expr, e)
+            raise
 
     def validate_table_data(self, table, raw_data, db = None):
 
+        logger.debug("validate_table_data start for table %r raw_data=%r", getattr(table, "name", None), raw_data)
         errors= {}
         validated = {}
 
         for col in table.columns:
             if col.autoincrement and col.primary_key:
+                logger.debug("skip autoincrement pk column %s", getattr(col, "name", None))
                 continue
 
             raw_val = raw_data.get(col.name)
+            logger.debug("processing column %s raw_val=%r", col.name, raw_val)
             if isinstance(raw_val, str) and raw_val.strip() == "":
                 raw_val = None
 
             if raw_val is None:
                 if not col.nullable and col.default is None and not col.autoincrement:
                     errors[col.name] = "Обязательное поле"
+                    logger.debug("column %s missing required value", col.name)
                 else:
                     validated[col.name] = None
                 continue
@@ -383,7 +423,9 @@ class TableValidator:
             if handler is None:
                 try:
                     parsed = str(raw_val)
+                    logger.debug("no handler for column %s, using str(parsed)=%r", col.name, parsed)
                 except Exception:
+                    logger.exception("Failed to str() raw_val for column %s", col.name)
                     errors[col.name] = "Невозможно привести значение к строке"
                     continue
                 validated[col.name] = parsed
@@ -391,31 +433,47 @@ class TableValidator:
 
             try:
                 parsed = handler.parse(raw_val, col)
+                logger.debug("parsed column %s => %r using %s", col.name, parsed, type(handler).__name__)
             except ValueError as e:
+                logger.debug("parse error for column %s: %s", col.name, e)
                 errors[col.name] = str(e)
                 continue
 
             if parsed is None:
                 if not col.nullable and col.default is None and not col.autoincrement:
                     errors[col.name] = "Обязательное поле"
+                    logger.debug("parsed is None but field is required for column %s", col.name)
                 else:
                     validated[col.name] = None
                 continue
 
             local_err = handler.validate(parsed, col)
             if local_err:
+                logger.debug("validation error for column %s: %s", col.name, local_err)
                 errors[col.name] = local_err
                 continue
 
             validated[col.name] = parsed
 
         if db is not None:
-            unique_candidates = {c.name: validated.get(c.name) for c in table.columns if c.unique}
-            to_check = {k: v for k, v in unique_candidates.items() if v is not None and k not in errors}
-            if to_check:
-                db_errors = db.check_uniques(table, to_check)
-                for f, msg in db_errors.items():
-                    errors[f] = msg
+            try:
+                unique_candidates = {c.name: validated.get(c.name) for c in table.columns if (getattr(c, "_inspector_unique", False) or getattr(c, "unique", False))}
+                logger.debug("unique_candidates computed: %r", unique_candidates)
+                to_check = {k: v for k, v in unique_candidates.items() if v is not None and k not in errors}
+                logger.debug("to_check for uniqueness: %r", to_check)
+                if to_check:
+                    try:
+                        db_errors = db.check_uniques(table, to_check)
+                        logger.debug("db.check_uniques returned: %r", db_errors)
+                        for f, msg in db_errors.items():
+                            errors[f] = msg
+                    except Exception as e:
+                        logger.exception("db.check_uniques raised exception for table %s with to_check=%r: %s", getattr(table, "name", None), to_check, e)
+                        for k in to_check.keys():
+                            if k not in errors:
+                                errors[k] = "Не удалось проверить уникальность"
+            except Exception as e:
+                logger.exception("Error while preparing uniqueness check: %s", e)
 
         for check in getattr(table, "constraints", []):
             if not isinstance(check, CheckConstraint):
@@ -426,7 +484,11 @@ class TableValidator:
                 continue
             try:
                 expr = self._sql_to_python_expr(txt, validated, table)
-                result = self._safe_eval(expr)
+                try:
+                    result = self._safe_eval(expr)
+                except Exception as e:
+                    logger.exception("Failed evaluating check constraint %r for table %s: %s", txt, getattr(table, "name", None), e)
+                    raise
                 if not result:
                     for colname in referenced:
                         if colname not in errors:
@@ -434,9 +496,13 @@ class TableValidator:
             except Exception:
                 for colname in referenced:
                     if colname not in errors:
-                        QMessageBox.critical("Ошибка", f"не удалось проверить check")
+                        try:
+                            QMessageBox.critical("Ошибка", f"не удалось проверить check")
+                        except Exception:
+                            logger.exception("Failed showing QMessageBox for check constraint failure on table %s", getattr(table, "name", None))
                         #errors[colname] = "Невозможно проверить ограничение CHECK"
 
+        logger.debug("validate_table_data result validated=%r errors=%r", validated, errors)
         return validated, errors
 
 _default_table_validator = TableValidator()
