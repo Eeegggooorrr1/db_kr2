@@ -12,7 +12,7 @@ from config import settings
 
 class Database:
 
-    def __init__(self, params: dict = None):
+    def __init__(self, params= None):
         if params is None:
             self.database_url = settings.get_db_url()
         else:
@@ -89,7 +89,7 @@ class Database:
                 FROM generate_series(1, 100) as seq(image_id);
             """))
 
-    def _build_url(self, params: dict) -> str:
+    def _build_url(self, params):
         user = params.get("DB_USER") or params.get("user") or ""
         password = params.get("DB_PASSWORD") or params.get("password") or ""
         host = params.get("DB_HOST") or params.get("host") or "localhost"
@@ -99,7 +99,7 @@ class Database:
             return f"postgresql://{user}:{password}@{host}:{port}/{name}"
         return f"postgresql://{user}@{host}:{port}/{name}"
 
-    def connect(self, params: dict) -> bool:
+    def connect(self, params):
         try:
             url = self._build_url(params)
             try:
@@ -119,7 +119,7 @@ class Database:
             self._connected = False
             return False
 
-    def connect_from_env(self) -> bool:
+    def connect_from_env(self):
         try:
             url = settings.get_db_url()
             try:
@@ -139,7 +139,7 @@ class Database:
             self._connected = False
             return False
 
-    def is_connected(self) -> bool:
+    def is_connected(self):
         return bool(getattr(self, "_connected", False))
 
     def close(self):
@@ -160,12 +160,12 @@ class Database:
     def list_tables(self):
         return self.insp.get_table_names()
 
-    def get_table(self, table_name: str) -> Table:
+    def get_table(self, table_name):
         if table_name not in self.metadata.tables:
             self.reflect_tables([table_name])
         return self.metadata.tables[table_name]
 
-    def check_uniques(self, table: Table, data):
+    def check_uniques(self, table, data):
         errors = {}
         session = self.SessionLocal()
         try:
@@ -182,7 +182,7 @@ class Database:
             session.close()
         return errors
 
-    def insert_row(self, table: Table, data):
+    def insert_row(self, table, data):
         session = self.SessionLocal()
         try:
             ins = table.insert().values(**{k: v for k, v in data.items() if v is not None})

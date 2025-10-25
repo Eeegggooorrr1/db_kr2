@@ -25,7 +25,7 @@ class EditFieldLine:
         self.error_label = error_label
         self._set_value = set_value_fn
 
-    def set_error(self, text: str):
+    def set_error(self, text):
         if text:
             self.error_label.setText(text)
             self.error_label.setVisible(True)
@@ -48,7 +48,7 @@ class EditFieldLine:
             pass
 
 class EditInputBuilder:
-    def build_field(self, col) -> EditFieldLine:
+    def build_field(self, col):
         placeholder_parts = [str(col.type)]
         if col.primary_key:
             placeholder_parts.append("primary key")
@@ -295,7 +295,7 @@ class EditInputBuilder:
 
 class EditConfirmDialog(QDialog):
     tablesChanged = Signal(str)
-    def __init__(self, table_name: str, db, table_manager = None,  parent=None):
+    def __init__(self, table_name, db, table_manager = None,  parent=None):
         super().__init__(parent)
         self.db = db
         self.table: SATable = db.get_table(table_name)

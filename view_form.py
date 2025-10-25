@@ -16,12 +16,12 @@ AGG_FUNCS = ['COUNT', 'SUM', 'AVG', 'MIN', 'MAX']
 TEXT_OPS = ['LIKE', '~', '~*', '!~', '!~*']
 
 
-def qualified_from_tuple(col: Tuple[str, str]) -> str:
+def qualified_from_tuple(col):
     return f"{col[0]}.{col[1]}"
 
 
 class ConditionDialog(QDialog):
-    def __init__(self, columns: List[Tuple[str, str]], parent=None, title='Добавить условие'):
+    def __init__(self, columns, parent=None, title='Добавить условие'):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.columns = columns or []
@@ -41,7 +41,7 @@ class ConditionDialog(QDialog):
         layout.addRow('Значение', self.val_le)
         layout.addRow(add_btn)
 
-    def get_condition(self) -> str:
+    def get_condition(self):
         val = self.val_le.text().replace("'", "''")
         col = self.col_cb.currentText() if self.col_cb.currentIndex() >= 0 else ''
         op = self.op_cb.currentText() if self.op_cb.currentIndex() >= 0 else '='
@@ -51,7 +51,7 @@ class ConditionDialog(QDialog):
 
 
 class JoinDialog(QDialog):
-    def __init__(self, schema: Dict[str, List[str]], parent=None):
+    def __init__(self, schema, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Добавить соединение")
         self.schema = schema or {}
@@ -573,7 +573,7 @@ class SQLStubWindow(QWidget):
         try:
             s = self.build_sql()
         except Exception as e:
-            s = f"-- Error building SQL: {e}"
+            s = f"Error: {e}"
         self.sql_preview.setPlainText(s)
 
     def clear_join(self):
