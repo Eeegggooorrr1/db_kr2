@@ -5,7 +5,7 @@ from datetime import date, datetime
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTableView, QMessageBox,
     QDialog, QTextEdit, QLineEdit, QComboBox, QCheckBox, QDateEdit, QDateTimeEdit, QTextEdit,
-    QFormLayout, QDialogButtonBox, QSpinBox, QSizePolicy
+    QFormLayout, QDialogButtonBox, QSpinBox, QSizePolicy, QFrame, QSplitter
 )
 from PySide6.QtGui import QStandardItemModel, QStandardItem, QIntValidator, QDoubleValidator
 from PySide6.QtCore import Qt, Signal
@@ -82,6 +82,167 @@ class OperationDialog(QDialog):
         super().accept()
 
 
+class ViewsDialog(QDialog):
+
+    def __init__(self, db, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.setWindowTitle("представления")
+        self.setMinimumSize(800, 400)
+        self._current_view_sql = None
+        self._viewer: Optional[TableResultWidget] = None
+        self.setup_ui()
+        self._load_views()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        top_row = QHBoxLayout()
+        self.normal_btn = QPushButton("Представления")
+        self.mat_btn = QPushButton("Материализованные представления")
+        self.normal_btn.setCheckable(True)
+        self.mat_btn.setCheckable(True)
+        self.normal_btn.setChecked(True)
+        self.normal_btn.clicked.connect(self._on_type_changed)
+        self.mat_btn.clicked.connect(self._on_type_changed)
+        top_row.addWidget(self.normal_btn)
+        top_row.addWidget(self.mat_btn)
+        top_row.addStretch()
+        layout.addLayout(top_row)
+
+        control_row = QHBoxLayout()
+        self.views_combo = QComboBox()
+        self.show_btn = QPushButton("Показать")
+        self.show_btn.clicked.connect(self._on_show_view)
+        control_row.addWidget(QLabel("Выбрать:"))
+        control_row.addWidget(self.views_combo)
+        control_row.addWidget(self.show_btn)
+        layout.addLayout(control_row)
+
+        self.viewer_frame = QFrame()
+        self.viewer_layout = QVBoxLayout(self.viewer_frame)
+        self.viewer_layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.viewer_frame)
+
+    def _on_type_changed(self):
+        sender = self.sender()
+        if sender == self.normal_btn:
+            self.mat_btn.setChecked(False)
+            self.normal_btn.setChecked(True)
+        else:
+            self.normal_btn.setChecked(False)
+            self.mat_btn.setChecked(True)
+        self._load_views()
+
+    def _load_views(self):
+        try:
+            with self.db.engine.connect() as conn:
+                if self.normal_btn.isChecked():
+                    q = text(
+                        "SELECT table_schema, table_name "
+                        "FROM information_schema.views "
+                        "WHERE table_schema NOT IN ('pg_catalog','information_schema') "
+                        "ORDER BY table_schema, table_name"
+                    )
+                    res = conn.execute(q).fetchall()
+                    items = [f"{r.table_schema}.{r.table_name}" for r in res]
+                else:
+                    q = text(
+                        "SELECT schemaname, matviewname "
+                        "FROM pg_matviews "
+                        "WHERE schemaname NOT IN ('pg_catalog','information_schema') "
+                        "ORDER BY schemaname, matviewname"
+                    )
+                    res = conn.execute(q).fetchall()
+                    items = [f"{r.schemaname}.{r.matviewname}" for r in res]
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось получить список представлений:\n{str(e)}")
+            items = []
+        self.views_combo.clear()
+        self.views_combo.addItems(items)
+
+    def _on_show_view(self):
+        sel = self.views_combo.currentText().strip()
+        if not sel:
+            QMessageBox.information(self, "Нет выбора", "Вы не выбрали представление")
+            return
+        if '.' in sel:
+            schema, name = sel.split('.', 1)
+        else:
+            schema, name = None, sel
+        if schema:
+            sql = f'SELECT * FROM "{schema}"."{name}"'
+        else:
+            sql = f'SELECT * FROM "{name}"'
+        for i in reversed(range(self.viewer_layout.count())):
+            w = self.viewer_layout.itemAt(i).widget()
+            if w:
+                w.setParent(None)
+        try:
+            viewer = TableResultWidget(self.db, sql, parent=self)
+            self.viewer_layout.addWidget(viewer)
+            self._viewer = viewer
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось показать представление:\n{e}")
+
+
+class SaveViewDialog(QDialog):
+    def __init__(self, db, sql_to_save: str, materialized: bool = False, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.sql_to_save = sql_to_save
+        self.materialized = materialized
+        self.setWindowTitle("Сохранить материализованное представление" if materialized else "Сохранить представление")
+        self.setMinimumWidth(400)
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText('view_name')
+        self.replace_chk = QCheckBox("OR REPLACE")
+        form.addRow("Имя:", self.name_edit)
+        form.addRow(self.replace_chk)
+        layout.addLayout(form)
+        self.preview = QTextEdit()
+        self.preview.setReadOnly(True)
+        self.preview.setPlainText(self.sql_to_save or "")
+        layout.addWidget(QLabel("SQL:"))
+        layout.addWidget(self.preview)
+
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns.accepted.connect(self._on_accept)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+
+    def _on_accept(self):
+        name = self.name_edit.text().strip()
+        if not name:
+            QMessageBox.information(self, "Введите имя", "Введите имя представления")
+            return
+        if '.' in name:
+            schema, vname = name.split('.', 1)
+            full_name = f'"{schema}"."{vname}"'
+        else:
+            full_name = f'"{name}"'
+        is_mat = "MATERIALIZED " if self.materialized else ""
+        if self.replace_chk.isChecked():
+            if is_mat:
+                stmt = f'DROP MATERIALIZED VIEW IF EXISTS {name} CASCADE; CREATE MATERIALIZED VIEW {full_name} AS {self.sql_to_save}'
+            else:
+                replace_clause = "OR REPLACE "
+                stmt = f'CREATE {replace_clause}VIEW {full_name} AS {self.sql_to_save}'
+        else:
+            stmt = f'CREATE {is_mat}VIEW {full_name} AS {self.sql_to_save}'
+        try:
+            with self.db.engine.begin() as conn:
+                conn.execute(text(stmt))
+            QMessageBox.information(self, "Успех", "Представление создано успешно")
+            self.accept()
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка создания", f"Ошибка при создании представления:\n{e}")
+
+
 class TableResultWidget(QWidget):
     editRequested = Signal(object, dict)
 
@@ -105,23 +266,39 @@ class TableResultWidget(QWidget):
         self.info_row = QWidget()
         info_l = QHBoxLayout(self.info_row)
         info_l.setContentsMargins(0, 0, 0, 0)
-        #self.info_label = QLabel("Executing")
-        self.refresh_btn = QPushButton("Обновить")
+        self.refresh_btn = QPushButton("обн.")
         self.refresh_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.refresh_btn.clicked.connect(self.load_and_build)
         self.edit_small_btn = QPushButton("ред.")
-        #self.edit_small_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.edit_small_btn.setFixedHeight(100)
         self.edit_small_btn.setFixedWidth(60)
         self.edit_small_btn.setVisible(False)
         self.edit_small_btn.clicked.connect(self._on_action_button_clicked)
-        self.reset_test_data_btn = QPushButton("Перезаписать тестовые данные")
+        self.reset_test_data_btn = QPushButton("сброс до тестовых")
         self.reset_test_data_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.reset_test_data_btn.clicked.connect(lambda: self.db.reset())
+
+        self.view_views_btn = QPushButton("Просм. представлений")
+        self.view_views_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.view_views_btn.clicked.connect(self._on_view_views_clicked)
+
+        self.save_view_btn = QPushButton("Сохр. представление")
+        self.save_view_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.save_view_btn.clicked.connect(self._on_save_view_clicked)
+
+        self.save_matview_btn = QPushButton("Сохр. мат. представление")
+        self.save_matview_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.save_matview_btn.clicked.connect(self._on_save_matview_clicked)
+
         info_l.addStretch()
         info_l.addWidget(self.edit_small_btn)
         info_l.addWidget(self.reset_test_data_btn)
         info_l.addWidget(self.refresh_btn)
+
+        info_l.addWidget(self.view_views_btn)
+        info_l.addWidget(self.save_view_btn)
+        info_l.addWidget(self.save_matview_btn)
+
         self.layout.addWidget(self.info_row)
         self.table_view = QTableView()
         self.table_view.clicked.connect(self._on_table_clicked)
@@ -138,7 +315,10 @@ class TableResultWidget(QWidget):
                 rows = result.fetchall()
         except Exception as e:
             QMessageBox.critical(self, "Query error", f"Error executing SQL:\n{str(e)}")
-            self.info_label.setText("Error executing query")
+            try:
+                self.info_label.setText("Error executing query")
+            except Exception:
+                pass
             self.table_view.setModel(QStandardItemModel(0, 0))
             return
 
@@ -356,3 +536,30 @@ class TableResultWidget(QWidget):
         if last.startswith('"') and last.endswith('"'):
             last = last[1:-1]
         return last
+
+    def _on_view_views_clicked(self):
+        try:
+            dlg = ViewsDialog(self.db, parent=self)
+            dlg.exec()
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось открыть просмотр представлений:\n{e}")
+
+    def _on_save_view_clicked(self):
+        if not self.sql or not self.sql.strip():
+            QMessageBox.information(self, "Нет SQL", "Нечего сохранять")
+            return
+        try:
+            dlg = SaveViewDialog(self.db, self.sql, materialized=False, parent=self)
+            dlg.exec()
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить представление:\n{e}")
+
+    def _on_save_matview_clicked(self):
+        if not self.sql or not self.sql.strip():
+            QMessageBox.information(self, "Нет SQL", "Нечего сохранять ")
+            return
+        try:
+            dlg = SaveViewDialog(self.db, self.sql, materialized=True, parent=self)
+            dlg.exec()
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить материализованное представление:\n{e}")

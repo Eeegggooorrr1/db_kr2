@@ -218,7 +218,7 @@ class AddDialog(QDialog):
         super().__init__(parent)
         self.db = db
         self.table: Table = db.get_table(table_name)
-        self.setWindowTitle(f"Add row — {table_name}")
+        self.setWindowTitle(f"Add row  {table_name}")
         self.table_manager = table_manager
         self.layout = QVBoxLayout(self)
         self.form_layout = QFormLayout()

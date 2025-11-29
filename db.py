@@ -1,4 +1,5 @@
 import re
+import uuid
 
 from sqlalchemy import text
 from typing import Optional, Iterable, Dict, Any
@@ -203,6 +204,266 @@ class Database:
         except Exception:
             return False
 
+    _ident_re = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)?$')
+
+    def _validate_identifier(self, ident: str):
+        if not isinstance(ident, str) or not ident:
+            raise ValueError("Идентификатор должен быть непустой строкой")
+        if not self._ident_re.match(ident):
+            raise ValueError(f"Недопустимый идентификатор: {ident!r}")
+        return True
+
+    def _split_schema_ident(self, ident: str):
+        parts = ident.split('.', 1)
+        if len(parts) == 1:
+            return ('public', parts[0])
+        return (parts[0], parts[1])
+
+    def _qual_ident(self, ident: str):
+        schema, name = self._split_schema_ident(ident)
+        return f'"{schema}"."{name}"'
+
+    def list_enums(self):
+
+        sql = text("""
+            SELECT n.nspname AS schema, t.typname AS name, e.enumlabel AS enum_value, e.enumsortorder
+            FROM pg_type t
+            JOIN pg_enum e ON t.oid = e.enumtypid
+            JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+            WHERE t.typtype = 'e'
+            ORDER BY t.typname, e.enumsortorder
+        """)
+        with self.engine.connect() as conn:
+            res = conn.execute(sql).mappings().all()
+        out = {}
+        for row in res:
+            name = row["name"]
+            val = row["enum_value"]
+            out.setdefault(name, []).append(val)
+        return out
+
+    def _get_enum_values(self, enum_name: str):
+        self._validate_identifier(enum_name)
+        schema, nm = self._split_schema_ident(enum_name)
+        sql = text("""
+            SELECT e.enumlabel
+            FROM pg_type t
+            JOIN pg_enum e ON t.oid = e.enumtypid
+            JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+            WHERE t.typname = :typname AND n.nspname = :schema AND t.typtype = 'e'
+            ORDER BY e.enumsortorder
+        """)
+        with self.engine.connect() as conn:
+            rows = conn.execute(sql, {'typname': nm, 'schema': schema}).scalars().all()
+        return list(rows)
+    def create_enum(self, name: str, values: list):
+
+        if not values or not isinstance(values, (list, tuple)):
+            raise ValueError("values должно быть непустым списком строк")
+        self._validate_identifier(name)
+        schema, nm = self._split_schema_ident(name)
+        ident = f'"{schema}"."{nm}"'
+
+        params = {}
+        placeholders = []
+        for i, v in enumerate(values):
+            if not isinstance(v, str):
+                raise ValueError("Каждое значение enum должно быть строкой")
+            key = f'p{i}'
+            placeholders.append(':' + key)
+            params[key] = v
+
+        sql = f"CREATE TYPE {ident} AS ENUM ({', '.join(placeholders)});"
+
+        with self.engine.begin() as conn:
+            conn.execute(text(sql), params)
+
+    def drop_enum(self, name: str, cascade: bool = False):
+        self._validate_identifier(name)
+        schema, nm = self._split_schema_ident(name)
+        ident = f'"{schema}"."{nm}"'
+        sql = f"DROP TYPE {ident} {'CASCADE' if cascade else 'RESTRICT'};"
+        with self.engine.begin() as conn:
+            conn.execute(text(sql))
+
+    def _enum_exists(self, name: str) -> bool:
+        self._validate_identifier(name)
+        schema, nm = self._split_schema_ident(name)
+        sql = text("""
+            SELECT 1
+            FROM pg_type t
+            JOIN pg_namespace n ON n.oid = t.typnamespace
+            WHERE t.typname = :typname AND n.nspname = :schema AND t.typtype = 'e'
+            LIMIT 1
+        """)
+        with self.engine.connect() as conn:
+            row = conn.execute(sql, {'typname': nm, 'schema': schema}).first()
+        return bool(row)
+
+    def get_column_enum(self, table_name: str, column_name: str):
+
+        try:
+            tbl = self.get_table(table_name)
+            col = tbl.c.get(column_name)
+            if col is None:
+                return None
+            et = getattr(col.type, 'name', None)
+            if et:
+                return et
+            tt = str(col.type)
+            m = re.search(r'\"?(?P<ename>[a-zA-Z0-9_]+)\"?', tt)
+            if m:
+                return m.group('ename')
+        except Exception:
+            return None
+        return None
+
+    def alter_column_enum(self, table_name: str, column_name: str, new_enum: str):
+
+        self._validate_identifier(table_name)
+        if not isinstance(column_name, str) or not column_name:
+            raise ValueError("column_name должен быть непустой строкой")
+        if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', column_name):
+            raise ValueError(f"Недопустимое имя колонки: {column_name!r}")
+
+        if not self._enum_exists(new_enum):
+            raise ValueError(f"Enum '{new_enum}' не найден в базе")
+
+        tbl_schema, tbl_name = self._split_schema_ident(table_name)
+        tbl_ident = f'"{tbl_schema}"."{tbl_name}"'
+        enum_schema, enum_name = self._split_schema_ident(new_enum)
+        enum_ident = f'"{enum_schema}"."{enum_name}"'
+        col_ident = f'"{column_name}"'
+
+
+        sql = text(f"""
+            ALTER TABLE {tbl_ident}
+            ALTER COLUMN {col_ident}
+            TYPE {enum_ident}
+            USING ({col_ident}::text)::{enum_ident};
+        """)
+        with self.engine.begin() as conn:
+            conn.execute(sql)
+
+    def replace_column_enum_by_swap(self, table_name: str, column_name: str, new_enum: str,
+                                    default: str = None):
+
+        self._validate_identifier(table_name)
+        if not isinstance(column_name, str) or not column_name:
+            raise ValueError("column_name должен быть непустой строкой")
+        if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', column_name):
+            raise ValueError(f"Недопустимое имя колонки: {column_name!r}")
+
+        if not self._enum_exists(new_enum):
+            raise ValueError(f"Enum '{new_enum}' не найден")
+
+        enum_values = set(self._get_enum_values(new_enum))
+        if default is not None and default not in enum_values:
+            raise ValueError(f"default '{default}' не входит в enum '{new_enum}'")
+
+        tbl_schema, tbl_name = self._split_schema_ident(table_name)
+        tbl_ident = f'"{tbl_schema}"."{tbl_name}"'
+        enum_schema, enum_nm = self._split_schema_ident(new_enum)
+        enum_ident = f'"{enum_schema}"."{enum_nm}"'
+        col_ident = f'"{column_name}"'
+
+        meta_sql = text("""
+            SELECT is_nullable, column_default
+            FROM information_schema.columns
+            WHERE table_schema = :schema AND table_name = :tname AND column_name = :cname
+        """)
+        with self.engine.connect() as conn:
+            meta_row = conn.execute(meta_sql,
+                                    {'schema': tbl_schema, 'tname': tbl_name, 'cname': column_name}).mappings().first()
+        if not meta_row:
+            raise ValueError(f"Колонка {table_name}.{column_name} не найдена")
+
+        is_nullable = (meta_row['is_nullable'] == 'YES')
+        orig_default = meta_row['column_default']
+
+        tmp_text_col = f'__{column_name}_tmp_text'
+        tmp_enum_col = f'__{column_name}_tmp_enum'
+        tmp_text_ident = f'"{tmp_text_col}"'
+        tmp_enum_ident = f'"{tmp_enum_col}"'
+
+        with self.engine.begin() as conn:
+            conn.execute(text(f'ALTER TABLE {tbl_ident} ADD COLUMN {tmp_text_ident} text;'))
+
+            conn.execute(
+                text(f'UPDATE {tbl_ident} SET {tmp_text_ident} = ({col_ident}::text) WHERE {col_ident} IS NOT NULL;'))
+
+            distinct_sql = text(
+                f"SELECT DISTINCT {tmp_text_ident} AS v FROM {tbl_ident} WHERE {tmp_text_ident} IS NOT NULL;")
+            rows = conn.execute(distinct_sql).scalars().all()
+            found_values = [r for r in rows if r is not None]
+
+            incompatible = [v for v in found_values if v not in enum_values]
+
+            if incompatible and default is None:
+                raise ValueError(f"Найдены несовместимые значения и не задан default: {incompatible}")
+
+            if incompatible and default is not None:
+                for v in incompatible:
+                    u = text(f"""
+                        UPDATE {tbl_ident}
+                        SET {tmp_text_ident} = :dval
+                        WHERE {tmp_text_ident} = :oldv
+                    """)
+                    conn.execute(u, {'dval': default, 'oldv': v})
+
+            conn.execute(text(f'ALTER TABLE {tbl_ident} ADD COLUMN {tmp_enum_ident} {enum_ident};'))
+
+            conn.execute(text(f"""
+                UPDATE {tbl_ident}
+                SET {tmp_enum_ident} = ({tmp_text_ident})::{enum_ident}
+                WHERE {tmp_text_ident} IS NOT NULL;
+            """))
+
+            if not is_nullable:
+                null_count = conn.execute(
+                    text(f"SELECT count(1) FROM {tbl_ident} WHERE {tmp_enum_ident} IS NULL;")).scalar()
+                if null_count and null_count > 0:
+                    raise ValueError(
+                        f"После подготовки временной колонки обнаружено {null_count} NULL значений, а исходная колонка NOT NULL. Укажите корректный default.")
+
+            conn.execute(text(f'ALTER TABLE {tbl_ident} DROP COLUMN {col_ident} CASCADE;'))
+
+            conn.execute(text(f'ALTER TABLE {tbl_ident} RENAME COLUMN {tmp_enum_ident} TO {col_ident};'))
+
+            conn.execute(text(f'ALTER TABLE {tbl_ident} DROP COLUMN {tmp_text_ident};'))
+
+            if orig_default is not None:
+                conn.execute(text(f'ALTER TABLE {tbl_ident} ALTER COLUMN {col_ident} SET DEFAULT {orig_default};'))
+
+            if not is_nullable:
+                conn.execute(text(f'ALTER TABLE {tbl_ident} ALTER COLUMN {col_ident} SET NOT NULL;'))
+        self.metadata.clear()
+        self.insp = inspect(self.engine)
+        self.reflect_tables([table_name], refresh=True)
+
+    def find_incompatible_enum_values(self, table_name: str, column_name: str, new_enum: str):
+
+        self._validate_identifier(table_name)
+        if not isinstance(column_name, str) or not column_name:
+            raise ValueError("column_name должен быть непустой строкой")
+        if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', column_name):
+            raise ValueError(f"Недопустимое имя колонки: {column_name!r}")
+
+        enum_values = self._get_enum_values(new_enum)
+        enum_set = set(enum_values)
+
+        tbl_schema, tbl_name = self._split_schema_ident(table_name)
+        tbl_ident = f'"{tbl_schema}"."{tbl_name}"'
+        col_ident = f'"{column_name}"'
+
+        sql = text(f"SELECT DISTINCT ({col_ident}::text) AS v FROM {tbl_ident} WHERE {col_ident} IS NOT NULL;")
+        with self.engine.connect() as conn:
+            rows = conn.execute(sql).scalars().all()
+
+        found = [r for r in rows if r is not None]
+        incompatible = [v for v in found if v not in enum_set]
+        return incompatible
+
     def alter_table(self, old_table_name, new_table_name, old_data, new_data):
         def _change_name(old_table_name, new_table_name):
             return f'ALTER TABLE "{old_table_name}" RENAME TO "{new_table_name}"'
@@ -219,6 +480,8 @@ class Database:
                     sql += ' TEXT'
             elif column['type'] == 'ARRAY':
                 sql += f' {column["array_elem_type"]}[]'
+            elif column['type'] == 'ENUM':
+                sql += f' {column['enum_name']}'
             else:
                 sql += f' {column["type"]}'
             if column.get('unique'):

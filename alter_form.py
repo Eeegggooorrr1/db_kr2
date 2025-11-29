@@ -1,11 +1,14 @@
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QWidget,
     QLineEdit, QComboBox, QCheckBox, QSpinBox, QMessageBox, QScrollArea,
-    QSizePolicy
+    QSizePolicy, QListWidget, QListWidgetItem, QPlainTextEdit, QInputDialog
 )
 from PySide6.QtCore import Signal, Qt
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QColor
 import re
+
+from sqlalchemy import text
+
 
 class RenameTableDialog(QDialog):
     def __init__(self, current_name: str, parent=None):
@@ -28,9 +31,12 @@ class RenameTableDialog(QDialog):
     def new_name(self):
         return self.input.text().strip()
 
+
 class ColumnEditorDialog(QDialog):
-    def __init__(self, column_data=None, parent=None):
+
+    def __init__(self, column_data=None, db=None, parent=None):
         super().__init__(parent)
+        self.db = db
         self.setWindowTitle("Колонка")
         self.layout = QVBoxLayout(self)
         self.form = QVBoxLayout()
@@ -72,6 +78,13 @@ class ColumnEditorDialog(QDialog):
         self.fk_table = QLineEdit(column_data.get('fk_table', '') if column_data else "")
         self.fk_column = QLineEdit(column_data.get('fk_column', '') if column_data else "")
 
+        self.enum_label = QLabel("Enum type:")
+        self.enum_combo = QComboBox()
+        self.enum_manage_btn = QPushButton("Управление enum")
+        self.enum_manage_btn.setToolTip("Открыть менеджер enum-типов")
+
+        self._refresh_enum_list()
+
         self.length_label = QLabel("Length:")
         self.array_label = QLabel("Array elem type:")
         self.default_label = QLabel("Default:")
@@ -80,6 +93,12 @@ class ColumnEditorDialog(QDialog):
         self.form.addWidget(self.name_edit)
         self.form.addWidget(QLabel("Type:"))
         self.form.addWidget(self.type_combo)
+        enum_row = QHBoxLayout()
+        enum_row.addWidget(self.enum_label)
+        enum_row.addWidget(self.enum_combo)
+        enum_row.addWidget(self.enum_manage_btn)
+        self.form.addLayout(enum_row)
+
         self.form.addWidget(self.not_null)
         self.form.addWidget(self.unique)
         self.form.addWidget(self.pk)
@@ -107,21 +126,54 @@ class ColumnEditorDialog(QDialog):
         btn_cancel.clicked.connect(self.reject)
 
         self.type_combo.currentTextChanged.connect(self.update_fields_visibility)
+        self.enum_manage_btn.clicked.connect(self.open_enum_manager)
         self.pk.toggled.connect(self.on_pk_toggled)
         self.update_fields_visibility(self.type_combo.currentText())
         if self.pk.isChecked():
             self.on_pk_toggled(True)
         if column_data and column_data.get('type') == 'ENUM':
-            self.set_enum_mode()
+            enum_name = column_data.get('enum_name')
+            if enum_name:
+                try:
+                    self.enum_combo.setCurrentText(enum_name)
+                except:
+                    pass
+
+    def _refresh_enum_list(self):
+        self.enum_combo.clear()
+        enums = []
+        if self.db is not None:
+            try:
+                res = self.db.list_enums()
+                if isinstance(res, dict):
+                    enums = list(res.keys())
+                elif isinstance(res, list):
+                    if all(isinstance(x, dict) and 'name' in x for x in res):
+                        enums = [x['name'] for x in res]
+                    else:
+                        enums = res
+            except Exception:
+                enums = []
+        self.enum_combo.addItems(enums)
+
+    def open_enum_manager(self):
+
+        dlg = EnumManagerDialog(db=self.db, parent=self)
+        dlg.exec()
+        self._refresh_enum_list()
 
     def update_fields_visibility(self, txt):
         t = txt.upper() if txt else ""
         is_text = "TEXT" in t and "ARRAY" not in t and "ENUM" not in t
         is_array = "ARRAY" in t
+        is_enum = "ENUM" in t
         self.length_label.setVisible(is_text)
         self.length_spin.setVisible(is_text)
         self.array_label.setVisible(is_array)
         self.array_elem_combo.setVisible(is_array)
+        self.enum_label.setVisible(is_enum)
+        self.enum_combo.setVisible(is_enum)
+        self.enum_manage_btn.setVisible(is_enum)
 
     def on_pk_toggled(self, checked):
         if checked:
@@ -153,9 +205,13 @@ class ColumnEditorDialog(QDialog):
         check_val = self.check_edit.text().strip() if self.check_edit.text().strip() != "" else None
         length_val = int(self.length_spin.value()) if self.length_spin.value() else None
         array_elem = self.array_elem_combo.currentText() if self.array_elem_combo.currentText() else None
+        enum_name = None
+        if self.type_combo.currentText().upper() == 'ENUM':
+            enum_name = self.enum_combo.currentText() if self.enum_combo.currentText() else None
         return {
             'name': self.name_edit.text().strip(),
             'type': self.type_combo.currentText(),
+            'enum_name': enum_name,
             'not_null': self.not_null.isChecked(),
             'unique': self.unique.isChecked(),
             'primary_key': self.pk.isChecked(),
@@ -166,6 +222,7 @@ class ColumnEditorDialog(QDialog):
             'fk_table': self.fk_table.text().strip() if self.fk_table.text().strip() != "" else None,
             'fk_column': self.fk_column.text().strip() if self.fk_column.text().strip() != "" else None
         }
+
 
 class ConfirmDialog(QDialog):
     def __init__(self, text: str, parent=None):
@@ -183,6 +240,200 @@ class ConfirmDialog(QDialog):
         btn_ok.clicked.connect(self.accept)
         btn_cancel.clicked.connect(self.reject)
 
+
+class EnumManagerDialog(QDialog):
+    tablesChanged = Signal(str)
+    def __init__(self, db, table_name: str = None, column_name: str = None, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.table_name = table_name
+        self.column_name = column_name
+        self.setWindowTitle("Enum manager")
+        self.layout = QVBoxLayout(self)
+
+        self.enum_list = QListWidget()
+        self.values_view = QPlainTextEdit()
+        self.values_view.setReadOnly(True)
+
+        row = QHBoxLayout()
+        row.addWidget(self.enum_list, 1)
+        row.addWidget(self.values_view, 2)
+        self.layout.addLayout(row)
+
+        btn_row = QHBoxLayout()
+        self.btn_new = QPushButton("Создать")
+        self.btn_delete = QPushButton("Удалить")
+        self.btn_assign = QPushButton("Назначить колонке")
+        self.btn_close = QPushButton("Закрыть")
+        btn_row.addStretch(1)
+        btn_row.addWidget(self.btn_new)
+        btn_row.addWidget(self.btn_delete)
+        btn_row.addWidget(self.btn_assign)
+        btn_row.addWidget(self.btn_close)
+        self.layout.addLayout(btn_row)
+
+        self.enum_list.currentItemChanged.connect(self.on_enum_selected)
+        self.btn_new.clicked.connect(self.create_enum)
+        self.btn_delete.clicked.connect(self.delete_enum)
+        self.btn_assign.clicked.connect(self.assign_enum_to_column)
+        self.btn_close.clicked.connect(self.accept)
+
+        self.current_enum = None
+        self.refresh()
+
+    def refresh(self):
+        self.enum_list.clear()
+        self.enum_map = {}
+        self.current_enum = None
+
+        if self.db is None:
+            return
+
+        try:
+            res = self.db.list_enums()
+            if isinstance(res, dict):
+                self.enum_map = res
+            elif isinstance(res, list):
+                if all(isinstance(x, dict) and 'name' in x for x in res):
+                    self.enum_map = {x['name']: x.get('values', []) for x in res}
+                else:
+                    self.enum_map = {name: [] for name in res}
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось получить enum-ы: {e}")
+            return
+
+        if self.table_name and self.column_name:
+            try:
+                cur = self.db.get_column_enum(self.table_name, self.column_name)
+                self.current_enum = cur
+            except Exception:
+                self.current_enum = None
+
+        for name in sorted(self.enum_map.keys()):
+            item = QListWidgetItem(name)
+            if name == self.current_enum:
+                item.setBackground(QColor(255, 255, 200))
+                font = item.font()
+                font.setBold(True)
+                item.setFont(font)
+            self.enum_list.addItem(item)
+
+    def on_enum_selected(self, cur: QListWidgetItem):
+        if cur is None:
+            self.values_view.setPlainText("")
+            return
+        name = cur.text()
+        vals = self.enum_map.get(name, [])
+        if vals:
+            self.values_view.setPlainText('\n'.join(map(str, vals)))
+        else:
+            self.values_view.setPlainText('(значений нет или тип не возвращает список значений)')
+
+    def create_enum(self):
+        name, ok = QInputDialog.getText(self, "Создать enum", "Имя enum:")
+        if not ok or not name.strip():
+            return
+        vals_txt, ok2 = QInputDialog.getText(self, "Создать enum", "Значения (через запятую):")
+        if not ok2:
+            return
+        vals = [v.strip() for v in vals_txt.split(',') if v.strip()]
+        if not vals:
+            QMessageBox.warning(self, "Внимание", "Нужно хотя бы одно значение")
+            return
+        try:
+            self.db.create_enum(name.strip(), vals)
+            QMessageBox.information(self, "Успешно", f"Enum '{name}' создан")
+            self.refresh()
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", str(e))
+
+    def delete_enum(self):
+        cur = self.enum_list.currentItem()
+        if not cur:
+            return
+        name = cur.text()
+        if self.current_enum and name == self.current_enum:
+            QMessageBox.warning(self, "Нельзя удалить", "Сначала смените тип колонки на другой, затем удаляйте этот enum.")
+            return
+        dlg = QMessageBox.question(self, "Подтвердите", f"Удалить enum '{name}'?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if dlg != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.db.drop_enum(name)
+            QMessageBox.information(self, "Успешно", f"Enum '{name}' удалён")
+            self.refresh()
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", str(e))
+
+    def assign_enum_to_column(self):
+
+        if not (self.table_name and self.column_name):
+            QMessageBox.warning(self, "Не указано", "Не заданы имя таблицы или колонки")
+            return
+
+        cur = self.enum_list.currentItem()
+        if not cur:
+            QMessageBox.information(self, "Не выбрано", "Выберите enum в списке")
+            return
+        new_enum = cur.text()
+
+        if self.current_enum and new_enum == self.current_enum:
+            QMessageBox.information(self, "Ничего не менять", "Колонка уже имеет этот enum")
+            return
+
+        conf = QMessageBox.question(
+            self,
+            "Подтвердите",
+            f"Сменить тип колонки '{self.table_name}.{self.column_name}' на enum '{new_enum}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if conf != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            incompatible = self.db.find_incompatible_enum_values(self.table_name, self.column_name, new_enum)
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось проверить несовместимости: {e}")
+            return
+
+        chosen_default = None
+        if incompatible:
+            enum_values = self.enum_map.get(new_enum)
+            if enum_values is None:
+                try:
+                    enum_values = self.db._get_enum_values(new_enum)
+                except Exception:
+                    QMessageBox.critical(self, "Ошибка", "Не удалось получить значения enum")
+                    return
+            if not enum_values:
+                QMessageBox.critical(self, "Ошибка", "Целевой enum не содержит значений")
+                return
+
+            preview = ", ".join(repr(x) for x in incompatible[:20])
+            if len(incompatible) > 20:
+                preview += f", ... ещё {len(incompatible) - 20}"
+            msg = ("В колонке обнаружены значения, которых нет в выбранном enum:\n\n"
+                   f"{preview}\n\n"
+                   "Все такие значения будут заменены на одно выбранное значение из enum.")
+            QMessageBox.information(self, "Несовместимые значения", msg)
+
+            item, ok = QInputDialog.getItem(self, "Выберите значение", "Значение для замены:", enum_values, 0, False)
+            if not ok:
+                QMessageBox.information(self, "Отмена", "Операция отменена")
+                return
+            chosen_default = item
+
+        try:
+            self.db.replace_column_enum_by_swap(self.table_name, self.column_name, new_enum, default=chosen_default)
+        except Exception as e:
+            QMessageBox.critical(self, "Не удалось изменить тип колонки", f"{e}")
+            return
+        self.tablesChanged.emit(self.table_name if self.table_name is not None else "")
+        QMessageBox.information(self, "Готово", "Тип колонки успешно изменён")
+        self.current_enum = new_enum
+        self.refresh()
+
+
 class AlterTableDialog(QDialog):
     tablesChanged = Signal(str)
 
@@ -191,7 +442,7 @@ class AlterTableDialog(QDialog):
         self.db = db
         self.table_name = table_name
         self.table_manager = table_manager
-        self.setWindowTitle(f"Alter table — {table_name}")
+        self.setWindowTitle(f"Alter table: {table_name}")
         self.layout = QVBoxLayout(self)
         top_row = QHBoxLayout()
         self.label_table = QLabel(f"Table: {table_name}")
@@ -256,17 +507,23 @@ class AlterTableDialog(QDialog):
             except:
                 type_text = ""
             is_enum = False
-            if "ENUM" in type_text.upper():
-                is_enum = True
-            else:
-                try:
+            enum_name = None
+            try:
+                if "ENUM" in type_text.upper():
+                    is_enum = True
+                else:
                     if hasattr(col.type, 'enums') and getattr(col.type, 'enums') is not None:
                         is_enum = True
-                except:
-                    is_enum = False
+                enum_name = getattr(col.type, 'name', None)
+                if not enum_name:
+                    m = re.search(r"'?(?P<ename>[a-zA-Z0-9_]+)'?\s*:\s*enum", type_text)
+                    if m:
+                        enum_name = m.group('ename')
+            except:
+                is_enum = False
             meta_text = []
             if is_enum:
-                meta_text.append("ENUM")
+                meta_text.append(f"ENUM({enum_name})" if enum_name else "ENUM")
             else:
                 meta_text.append(type_text)
             meta_text.append("NOT NULL" if not col.nullable else "NULL")
@@ -324,14 +581,19 @@ class AlterTableDialog(QDialog):
                 row.setStyleSheet("QWidget { background: #ffffff; }")
             else:
                 row.setStyleSheet("QWidget { background: #fbfbfb; }")
+
             if is_enum:
-                btn_edit.setEnabled(False)
-                btn_edit.setToolTip("Этот столбец ENUM — редактирование запрещено")
-                btn_delete.setEnabled(True)
-                btn_delete.setToolTip("Удаление разрешено")
+                btn_edit.setEnabled(True)
+                btn_edit.setToolTip("Управление enum")
+            else:
+                btn_edit.setEnabled(True)
+
             self.column_rows.append((col, row))
             cid = idx
-            btn_edit.clicked.connect(lambda _checked, c=col: self.handle_edit(c))
+            if is_enum:
+                btn_edit.clicked.connect(lambda _checked, c=col, en=enum_name: self.handle_enum_edit(c, en))
+            else:
+                btn_edit.clicked.connect(lambda _checked, c=col: self.handle_edit(c))
             btn_delete.clicked.connect(lambda _checked, c=col: self.handle_delete(c))
             idx += 1
 
@@ -385,6 +647,7 @@ class AlterTableDialog(QDialog):
                 fk_table = None
                 fk_column = None
             detected_type = "TEXT"
+            enum_name = None
             if "ARRAY" in type_text.upper():
                 detected_type = "ARRAY"
             else:
@@ -399,6 +662,7 @@ class AlterTableDialog(QDialog):
                         is_enum = False
                 if is_enum:
                     detected_type = "ENUM"
+                    enum_name = getattr(col.type, 'name', None)
                 elif "TEXT" in type_text.upper():
                     detected_type = "TEXT"
                 elif "INT" in type_text.upper() or "INTEGER" in type_text.upper():
@@ -414,6 +678,7 @@ class AlterTableDialog(QDialog):
             data[idx] = {
                 'name': col.name,
                 'type': detected_type,
+                'enum_name': enum_name,
                 'not_null': not col.nullable,
                 'unique': col.name in uniques,
                 'primary_key': bool(getattr(col, 'primary_key', False)),
@@ -449,7 +714,7 @@ class AlterTableDialog(QDialog):
                 QMessageBox.critical(self, "Ошибка", str(e))
 
     def handle_add(self):
-        dlg = ColumnEditorDialog(parent=self)
+        dlg = ColumnEditorDialog(parent=self, db=self.db)
         if dlg.exec() == QDialog.Accepted:
             col_data = dlg.get_data()
             if not col_data.get('name'):
@@ -480,7 +745,7 @@ class AlterTableDialog(QDialog):
                     break
         except:
             cur_data = None
-        dlg = ColumnEditorDialog(column_data=cur_data or {}, parent=self)
+        dlg = ColumnEditorDialog(column_data=cur_data or {}, parent=self, db=self.db)
         if dlg.exec() == QDialog.Accepted:
             new_col = dlg.get_data()
             old_data = self.build_data_from_table(self.table)
@@ -519,3 +784,10 @@ class AlterTableDialog(QDialog):
                 self.refresh_from_db()
             except Exception as e:
                 QMessageBox.critical(self, "Ошибка", str(e))
+
+    def handle_enum_edit(self, col, enum_name=None):
+        dlg = EnumManagerDialog(db=self.db, table_name=self.table_name, column_name=col.name, parent=self)
+
+        if dlg.exec() == QDialog.Accepted:
+            self.refresh_from_db()
+            dlg.tablesChanged.connect(self.table_manager.handle_external_change)

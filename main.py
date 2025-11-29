@@ -17,9 +17,6 @@ from refresh_manager import TableManager
 from view_form import SQLStubWindow
 from view_results_form import TableResultWidget
 
-
-
-
 class AppMainWindow(QMainWindow):
     BUTTONS = [
         ("logs", "Логи"),
@@ -214,7 +211,7 @@ class AppMainWindow(QMainWindow):
     def _placeholder_page(self, title: str):
         w = QWidget()
         layout = QVBoxLayout(w)
-        layout.addWidget(QLabel(f"{title} — ещё не реализовано"))
+        layout.addWidget(QLabel(f"{title}  ещё не реализовано"))
         layout.addStretch(1)
         return w
 
@@ -288,7 +285,7 @@ class AppMainWindow(QMainWindow):
 
         self.left_stack.setCurrentIndex(2)
         self.right_stack.setCurrentIndex(3)
-        self.right_heading.setText(f"Добавление — {table_name}")
+        self.right_heading.setText(f"Добавление в {table_name}")
 
     def _build_left_view_panel(self):
         w = QWidget()
