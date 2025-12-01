@@ -16,10 +16,224 @@ from sqlalchemy import text
 AGG_FUNCS = ['COUNT', 'SUM', 'AVG', 'MIN', 'MAX']
 TEXT_OPS = ['LIKE', '~', '~*', '!~', '!~*', 'SIMILAR TO', 'NOT SIMILAR TO']
 
+class WindowDialog(QDialog):
+    def __init__(self, columns, parent=None, title='Добавить оконную функцию'):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.columns = columns or []
+        self.setup_ui()
 
-def qualified_from_tuple(col):
-    return f"{col[0]}.{col[1]}"
 
+    def setup_ui(self):
+        layout = QFormLayout(self)
+
+        self.op_cb = QComboBox()
+        self.op_cb.addItems(['LAG', 'LEAD', 'RANK', 'ROW_NUMBER'] + AGG_FUNCS)
+        self.op_cb.currentIndexChanged.connect(self.on_op_changed)
+        layout.addRow('Функция', self.op_cb)
+        self.col_cb = QComboBox()
+        self.col_cb.addItems([f"{t}.{c}" for t, c in self.columns])
+        layout.addRow('Столбец', self.col_cb)
+        self.lag_lead_container = QWidget()
+        lag_lead_layout = QHBoxLayout(self.lag_lead_container)
+        lag_lead_layout.setContentsMargins(0, 0, 0, 0)
+        self.offset_spin = QSpinBox()
+        self.offset_spin.setMinimum(1)
+        self.offset_spin.setMaximum(1000)
+        self.offset_spin.setValue(1)
+        lag_lead_layout.addWidget(QLabel("Offset:"))
+        lag_lead_layout.addWidget(self.offset_spin)
+        self.default_le = QLineEdit()
+        self.default_le.setPlaceholderText("Значение по умолчанию")
+        lag_lead_layout.addWidget(QLabel("Default:"))
+        lag_lead_layout.addWidget(self.default_le)
+        lag_lead_layout.addStretch()
+        self.lag_lead_container.setVisible(False)
+        self.params_label = QLabel("Параметры")
+        layout.addRow(self.params_label, self.lag_lead_container)
+        self.partition_cb = QComboBox()
+        self.partition_cb.addItems([''] + [f"{t}.{c}" for t, c in self.columns])
+        layout.addRow('Партиция', self.partition_cb)
+        self.sort_container = QWidget()
+        sort_layout = QHBoxLayout(self.sort_container)
+        sort_layout.setContentsMargins(0, 0, 0, 0)
+        self.sort_col_cb = QComboBox()
+        self.sort_col_cb.addItems([''] + [f"{t}.{c}" for t, c in self.columns])
+        sort_layout.addWidget(self.sort_col_cb)
+        self.sort_dir_cb = QComboBox()
+        self.sort_dir_cb.addItems(['ASC', 'DESC'])
+        sort_layout.addWidget(self.sort_dir_cb)
+        sort_layout.addStretch()
+        layout.addRow('Сортировка', self.sort_container)
+        self.frame_type_cb = QComboBox()
+        self.frame_type_cb.addItems(['', 'ROWS', 'RANGE'])
+        layout.addRow('Тип фрейма', self.frame_type_cb)
+        frame_part_container = QWidget()
+        frame_part_layout = QHBoxLayout(frame_part_container)
+        frame_part_layout.setContentsMargins(0, 0, 0, 0)
+        self.frame_start_cb = QComboBox()
+        self.frame_start_cb.addItems(
+            ['UNBOUNDED PRECEDING', 'PRECEDING', 'CURRENT ROW', 'FOLLOWING', 'UNBOUNDED FOLLOWING'])
+        frame_part_layout.addWidget(self.frame_start_cb)
+        self.frame_start_spin = QSpinBox()
+        self.frame_start_spin.setMinimum(1)
+        self.frame_start_spin.setMaximum(1000000)
+        self.frame_start_spin.setVisible(False)
+        frame_part_layout.addWidget(self.frame_start_spin)
+        frame_part_layout.addWidget(QLabel("AND"))
+        self.frame_end_cb = QComboBox()
+        self.frame_end_cb.addItems(
+            ['CURRENT ROW', 'FOLLOWING', 'UNBOUNDED FOLLOWING', 'PRECEDING', 'UNBOUNDED PRECEDING'])
+        frame_part_layout.addWidget(self.frame_end_cb)
+        self.frame_end_spin = QSpinBox()
+        self.frame_end_spin.setMinimum(1)
+        self.frame_end_spin.setMaximum(1000000)
+        self.frame_end_spin.setVisible(False)
+        frame_part_layout.addWidget(self.frame_end_spin)
+        frame_part_layout.addStretch()
+        layout.addRow('Фрейм', frame_part_container)
+        self.frame_type_cb.currentIndexChanged.connect(
+            lambda _: frame_part_container.setVisible(bool(self.frame_type_cb.currentText())))
+        self.frame_start_cb.currentIndexChanged.connect(self.on_frame_changed)
+        self.frame_end_cb.currentIndexChanged.connect(self.on_frame_changed)
+        frame_part_container.setVisible(False)
+        self.alias_le = QLineEdit()
+        layout.addRow('Имя', self.alias_le)
+        add_btn = QPushButton('Добавить')
+        add_btn.clicked.connect(self.accept)
+        layout.addRow(add_btn)
+        self.on_op_changed()
+
+    def quot(self, ident):
+        if not ident:
+            return ident
+        parts = ident.split('.')
+        esc = []
+        for p in parts:
+            if p.isidentifier():
+                esc.append(p)
+            else:
+                esc.append('"' + p.replace('"', '""') + '"')
+        return '.'.join(esc)
+
+    def on_frame_changed(self):
+        start = self.frame_start_cb.currentText()
+        if start == 'PRECEDING' or start == 'FOLLOWING':
+            self.frame_start_spin.setVisible(True)
+        else:
+            self.frame_start_spin.setVisible(False)
+        end = self.frame_end_cb.currentText()
+        if end == 'PRECEDING' or end == 'FOLLOWING':
+            self.frame_end_spin.setVisible(True)
+        else:
+            self.frame_end_spin.setVisible(False)
+
+    def on_op_changed(self):
+        op = self.op_cb.currentText()
+        if op == 'RANK' or op == 'ROW_NUMBER':
+            self.col_cb.setVisible(False)
+            layout = self.layout()
+            for i in range(layout.rowCount()):
+                item = layout.itemAt(i, QFormLayout.LabelRole)
+                if item and item.widget() and item.widget().text() == 'Столбец':
+                    item.widget().setVisible(False)
+                    break
+        else:
+            self.col_cb.setVisible(True)
+            layout = self.layout()
+            for i in range(layout.rowCount()):
+                item = layout.itemAt(i, QFormLayout.LabelRole)
+                if item and item.widget() and item.widget().text() == 'Столбец':
+                    item.widget().setVisible(True)
+                    break
+        if op in ['LAG', 'LEAD']:
+            self.lag_lead_container.setVisible(True)
+            self.params_label.setVisible(True)
+        else:
+            self.lag_lead_container.setVisible(False)
+            self.params_label.setVisible(False)
+        self.sort_container.setVisible(True)
+
+    def on_add(self):
+        func = self.op_cb.currentText()
+        alias_text = self.alias_le.text().strip()
+        column_expr = ""
+        if func != 'RANK' and self.col_cb.currentText():
+            column_expr = self.quot(self.col_cb.currentText())
+        offset_expr = ""
+        default_expr = ""
+        if func in ['LAG', 'LEAD']:
+            offset_value = self.offset_spin.value()
+            if offset_value != 1:
+                offset_expr = f", {offset_value}"
+            default_text = self.default_le.text().strip()
+            if default_text:
+                if default_text.replace('.', '').isdigit():
+                    default_expr = f", {default_text}"
+                else:
+                    default_escaped = default_text.replace("'", "''")
+                    default_expr = f", '{default_escaped}'"
+        args_parts = []
+        if column_expr:
+            args_parts.append(column_expr)
+        if offset_expr:
+            args_parts.append(offset_expr.lstrip(", "))
+        if default_expr:
+            args_parts.append(default_expr.lstrip(", "))
+        func_args = ", ".join(args_parts) if args_parts else ""
+        partition_expr = ""
+        partition_text = self.partition_cb.currentText().strip()
+        if partition_text:
+            partition_expr = f"PARTITION BY {self.quot(partition_text)}"
+        order_expr = ""
+        sort_col_text = self.sort_col_cb.currentText().strip()
+        if sort_col_text:
+            sort_dir = self.sort_dir_cb.currentText()
+            order_expr = f"ORDER BY {self.quot(sort_col_text)} {sort_dir}"
+        frame_expr = ""
+        frame_type = self.frame_type_cb.currentText().strip()
+        if frame_type:
+            start = self.frame_start_cb.currentText()
+            end = self.frame_end_cb.currentText()
+
+            def part_text(val, spin):
+                if val == 'UNBOUNDED PRECEDING':
+                    return 'UNBOUNDED PRECEDING'
+                if val == 'UNBOUNDED FOLLOWING':
+                    return 'UNBOUNDED FOLLOWING'
+                if val == 'CURRENT ROW':
+                    return 'CURRENT ROW'
+                if val == 'PRECEDING':
+                    return f"{spin} PRECEDING"
+                if val == 'FOLLOWING':
+                    return f"{spin} FOLLOWING"
+                return val
+
+            sspin = str(self.frame_start_spin.value())
+            espin = str(self.frame_end_spin.value())
+            stext = part_text(start, sspin)
+            etext = part_text(end, espin)
+            frame_expr = f"{frame_type} BETWEEN {stext} AND {etext}"
+        over_parts = []
+        if partition_expr:
+            over_parts.append(partition_expr)
+        if order_expr:
+            over_parts.append(order_expr)
+        if frame_expr:
+            over_parts.append(frame_expr)
+        over_clause = "OVER(" + " ".join(over_parts) + ")" if over_parts else "OVER()"
+        alias_expr = ""
+        if alias_text:
+            if alias_text.isidentifier():
+                alias_expr = f" AS {alias_text}"
+            else:
+                alias_escaped = alias_text.replace('"', '""')
+                alias_expr = f' AS "{alias_escaped}"'
+        if func_args:
+            final_expr = f"{func}({func_args}) {over_clause}{alias_expr}"
+        else:
+            final_expr = f"{func}() {over_clause}{alias_expr}"
+        return final_expr
 
 class ConditionDialog(QDialog):
     def __init__(self, columns, parent=None, title='Добавить условие'):
@@ -342,6 +556,7 @@ class SQLStubWindow(QWidget):
         self.joins = []
         self.aggregates = []
         self.custom_expressions = []
+        self.window_functions = []
         self.table_to_col_cbs = {}
         self.all_col_cbs = []
         self.schema = {}
@@ -412,6 +627,21 @@ class SQLStubWindow(QWidget):
         expr_group.setLayout(expr_layout)
         main_layout.addWidget(expr_group)
 
+        window_group = QGroupBox('Оконные функции')
+        window_layout = QVBoxLayout()
+        self.window_list = QListWidget()
+        window_layout.addWidget(self.window_list)
+        window_btn_row = QHBoxLayout()
+        create_window_btn = QPushButton('Добавить')
+        create_window_btn.clicked.connect(self.open_window_builder)
+        clear_window_btn = QPushButton('Очистить')
+        clear_window_btn.clicked.connect(self.clear_window)
+        window_btn_row.addWidget(create_window_btn)
+        window_btn_row.addWidget(clear_window_btn)
+        window_btn_row.addStretch()
+        window_layout.addLayout(window_btn_row)
+        window_group.setLayout(window_layout)
+        main_layout.addWidget(window_group)
 
         cte_group = QGroupBox('CTE')
         cte_layout = QVBoxLayout()
@@ -646,6 +876,25 @@ class SQLStubWindow(QWidget):
     def clear_expressions(self):
         self.custom_expressions.clear()
         self.expr_list.clear()
+        self.update_sql_preview()
+
+
+    def open_window_builder(self):
+        cols = [(t, c) for t in self.schema for c in self.schema[t]]
+        dlg = WindowDialog(columns=cols, parent=self, title='Создать оконную функцию')
+        if dlg.exec():
+            expr = dlg.on_add()
+            if expr:
+
+                self.window_functions.append(expr)
+                self.window_list.addItem(expr)
+                self.update_sql_preview()
+
+
+
+    def clear_window(self):
+        self.window_functions.clear()
+        self.window_list.clear()
         self.update_sql_preview()
 
     def open_add_cte_dialog(self):
@@ -1092,6 +1341,8 @@ class SQLStubWindow(QWidget):
                 parts.append(f"{fn}({col}) AS {alias}")
         if self.custom_expressions:
             parts.extend(self.custom_expressions)
+        if self.window_functions:
+            parts.extend(self.window_functions)
         select_clause = ', '.join(parts) if parts else '*'
 
         with_clause = ""
