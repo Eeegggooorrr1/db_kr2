@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QGroupBox, QDialog, QComboBox, QLineEdit,
     QFormLayout, QLabel, QListWidget, QTextEdit,
-    QScrollArea, QCheckBox, QFrame, QMessageBox, QSpinBox, QTableView, QListWidgetItem
+    QScrollArea, QCheckBox, QFrame, QMessageBox, QSpinBox, QTableView, QListWidgetItem, QAbstractItemView
 )
 from PySide6.QtCore import Qt, Signal
 import sys
@@ -21,14 +21,15 @@ class WindowDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.columns = columns or []
+        self.order_rows = []
         self.setup_ui()
-
 
     def setup_ui(self):
         layout = QFormLayout(self)
 
         self.op_cb = QComboBox()
-        self.op_cb.addItems(['LAG', 'LEAD', 'RANK', 'ROW_NUMBER'] + AGG_FUNCS)
+        self.op_cb.addItems(
+            ['LAG', 'LEAD', 'RANK', 'ROW_NUMBER', 'DENSE_RANK', 'FIRST_VALUE', 'LAST_VALUE'] + AGG_FUNCS)
         self.op_cb.currentIndexChanged.connect(self.on_op_changed)
         layout.addRow('Функция', self.op_cb)
         self.col_cb = QComboBox()
@@ -51,20 +52,27 @@ class WindowDialog(QDialog):
         self.lag_lead_container.setVisible(False)
         self.params_label = QLabel("Параметры")
         layout.addRow(self.params_label, self.lag_lead_container)
-        self.partition_cb = QComboBox()
-        self.partition_cb.addItems([''] + [f"{t}.{c}" for t, c in self.columns])
-        layout.addRow('Партиция', self.partition_cb)
-        self.sort_container = QWidget()
-        sort_layout = QHBoxLayout(self.sort_container)
-        sort_layout.setContentsMargins(0, 0, 0, 0)
-        self.sort_col_cb = QComboBox()
-        self.sort_col_cb.addItems([''] + [f"{t}.{c}" for t, c in self.columns])
-        sort_layout.addWidget(self.sort_col_cb)
-        self.sort_dir_cb = QComboBox()
-        self.sort_dir_cb.addItems(['ASC', 'DESC'])
-        sort_layout.addWidget(self.sort_dir_cb)
-        sort_layout.addStretch()
-        layout.addRow('Сортировка', self.sort_container)
+        self.partition_list = QListWidget()
+        self.partition_list.setSelectionMode(QAbstractItemView.MultiSelection)
+        for t, c in self.columns:
+            self.partition_list.addItem(f"{t}.{c}")
+        layout.addRow('Партиция', self.partition_list)
+        self.order_container = QWidget()
+        order_layout = QVBoxLayout(self.order_container)
+        order_layout.setContentsMargins(0, 0, 0, 0)
+        btn_row = QWidget()
+        btn_row_layout = QHBoxLayout(btn_row)
+        btn_row_layout.setContentsMargins(0, 0, 0, 0)
+        add_order_btn = QPushButton('Добавить столбец сортировки')
+        add_order_btn.clicked.connect(self.add_order_row)
+        btn_row_layout.addWidget(add_order_btn)
+        btn_row_layout.addStretch()
+        order_layout.addWidget(btn_row)
+        self.order_rows_widget = QWidget()
+        self.order_rows_layout = QVBoxLayout(self.order_rows_widget)
+        self.order_rows_layout.setContentsMargins(0, 0, 0, 0)
+        order_layout.addWidget(self.order_rows_widget)
+        layout.addRow('Сортировка', self.order_container)
         self.frame_type_cb = QComboBox()
         self.frame_type_cb.addItems(['', 'ROWS', 'RANGE'])
         layout.addRow('Тип фрейма', self.frame_type_cb)
@@ -130,7 +138,7 @@ class WindowDialog(QDialog):
 
     def on_op_changed(self):
         op = self.op_cb.currentText()
-        if op == 'RANK' or op == 'ROW_NUMBER':
+        if op in ('RANK', 'ROW_NUMBER', 'DENSE_RANK'):
             self.col_cb.setVisible(False)
             layout = self.layout()
             for i in range(layout.rowCount()):
@@ -152,13 +160,39 @@ class WindowDialog(QDialog):
         else:
             self.lag_lead_container.setVisible(False)
             self.params_label.setVisible(False)
-        self.sort_container.setVisible(True)
+        self.order_container.setVisible(True)
+
+    def add_order_row(self):
+        row_widget = QWidget()
+        row_layout = QHBoxLayout(row_widget)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        sort_col_cb = QComboBox()
+        sort_col_cb.addItems([''] + [f"{t}.{c}" for t, c in self.columns])
+        row_layout.addWidget(sort_col_cb)
+        sort_dir_cb = QComboBox()
+        sort_dir_cb.addItems(['ASC', 'DESC'])
+        row_layout.addWidget(sort_dir_cb)
+        remove_btn = QPushButton('Удалить')
+
+        def remove():
+            for i, r in enumerate(self.order_rows):
+                if r['widget'] is row_widget:
+                    self.order_rows_layout.removeWidget(row_widget)
+                    row_widget.setParent(None)
+                    self.order_rows.pop(i)
+                    break
+
+        remove_btn.clicked.connect(remove)
+        row_layout.addWidget(remove_btn)
+        row_layout.addStretch()
+        self.order_rows_layout.addWidget(row_widget)
+        self.order_rows.append({'widget': row_widget, 'col_cb': sort_col_cb, 'dir_cb': sort_dir_cb})
 
     def on_add(self):
         func = self.op_cb.currentText()
         alias_text = self.alias_le.text().strip()
         column_expr = ""
-        if func != 'RANK' and self.col_cb.currentText():
+        if func not in ('RANK', 'ROW_NUMBER', 'DENSE_RANK') and self.col_cb.currentText():
             column_expr = self.quot(self.col_cb.currentText())
         offset_expr = ""
         default_expr = ""
@@ -182,14 +216,18 @@ class WindowDialog(QDialog):
             args_parts.append(default_expr.lstrip(", "))
         func_args = ", ".join(args_parts) if args_parts else ""
         partition_expr = ""
-        partition_text = self.partition_cb.currentText().strip()
-        if partition_text:
-            partition_expr = f"PARTITION BY {self.quot(partition_text)}"
+        selected = [it.text() for it in self.partition_list.selectedItems()]
+        if selected:
+            partition_expr = "PARTITION BY " + ", ".join([self.quot(s) for s in selected])
         order_expr = ""
-        sort_col_text = self.sort_col_cb.currentText().strip()
-        if sort_col_text:
-            sort_dir = self.sort_dir_cb.currentText()
-            order_expr = f"ORDER BY {self.quot(sort_col_text)} {sort_dir}"
+        order_parts = []
+        for r in self.order_rows:
+            col_text = r['col_cb'].currentText().strip()
+            if col_text:
+                dir_text = r['dir_cb'].currentText()
+                order_parts.append(f"{self.quot(col_text)} {dir_text}")
+        if order_parts:
+            order_expr = "ORDER BY " + ", ".join(order_parts)
         frame_expr = ""
         frame_type = self.frame_type_cb.currentText().strip()
         if frame_type:
